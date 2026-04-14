@@ -7,6 +7,7 @@ All methods are synchronous and raise on HTTP errors.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -15,6 +16,38 @@ import requests
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 15.0
+_UPLOAD_TIMEOUT = 120.0
+
+
+def _read_plugin_version() -> str:
+    """Read plugin version from plugin.yaml."""
+    try:
+        import yaml
+        p = Path(__file__).parent / "plugin.yaml"
+        if p.exists():
+            data = yaml.safe_load(p.read_text(encoding="utf-8"))
+            return str(data.get("version", ""))
+    except Exception:
+        # Fallback: simple parse without pyyaml
+        try:
+            p = Path(__file__).parent / "plugin.yaml"
+            for line in p.read_text(encoding="utf-8").splitlines():
+                if line.startswith("version:"):
+                    return line.split(":", 1)[1].strip().strip('"').strip("'")
+        except Exception:
+            pass
+    return ""
+
+
+_PLUGIN_VERSION = _read_plugin_version()
+
+
+def _base_metadata() -> Dict[str, Any]:
+    """Base metadata included in all add_memories calls."""
+    meta: Dict[str, Any] = {"source": "HERMES"}
+    if _PLUGIN_VERSION:
+        meta["plugin_version"] = _PLUGIN_VERSION
+    return meta
 
 
 class MemoryLakeClient:
@@ -30,6 +63,7 @@ class MemoryLakeClient:
         self._doc_v1 = f"openapi/memorylake/api/v1/projects/{project_id}/documents"
         self._search_v1 = "openapi/memorylake/api/v1/search"
         self._project_v1 = f"openapi/memorylake/api/v1/projects/{project_id}"
+        self._upload_v1 = "openapi/memorylake/api/v1/upload"
 
     def _url(self, path: str) -> str:
         return f"{self._host}/{path}"
@@ -100,13 +134,17 @@ class MemoryLakeClient:
         *,
         session_id: Optional[str] = None,
         infer: bool = True,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Send messages for server-side memory extraction."""
+        meta = _base_metadata()
+        if metadata:
+            meta.update(metadata)
         payload: Dict[str, Any] = {
             "messages": messages,
             "user_id": user_id,
             "infer": infer,
-            "metadata": {"source": "HERMES"},
+            "metadata": meta,
         }
         if session_id:
             payload["chat_session_id"] = session_id
@@ -293,6 +331,64 @@ class MemoryLakeClient:
             "results": data.get("results", []),
             "total_results": data.get("total_results", 0),
         }
+
+    # -- Upload (V1) -----------------------------------------------------------
+
+    def create_multipart_upload(self, file_size: int) -> Dict[str, Any]:
+        """Create a multipart upload session. Returns uploadId, objectKey, preSignedUrls."""
+        resp = requests.post(
+            self._url(f"{self._upload_v1}/create-multipart"),
+            json={"file_size": file_size},
+            headers=self._headers(),
+            timeout=_TIMEOUT,
+        )
+        return self._unwrap(resp)
+
+    def upload_part(self, upload_url: str, data: bytes) -> str:
+        """Upload a single part to the pre-signed URL. Returns the ETag."""
+        resp = requests.put(
+            upload_url,
+            data=data,
+            headers={"Content-Type": "application/octet-stream"},
+            timeout=_UPLOAD_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.headers.get("ETag", "").strip('"')
+
+    def complete_multipart_upload(
+        self, upload_id: str, object_key: str, part_etags: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Complete the multipart upload."""
+        resp = requests.post(
+            self._url(f"{self._upload_v1}/complete-multipart"),
+            json={
+                "upload_id": upload_id,
+                "object_key": object_key,
+                "part_etags": part_etags,
+            },
+            headers=self._headers(),
+            timeout=_TIMEOUT,
+        )
+        return self._unwrap(resp)
+
+    def quick_add_document(self, object_key: str, file_name: str) -> Dict[str, Any]:
+        """Associate an uploaded object with the project as a document."""
+        resp = requests.post(
+            self._url(f"{self._doc_v1}/quick-add"),
+            json={"object_key": object_key, "file_name": file_name},
+            headers=self._headers(),
+            timeout=_TIMEOUT,
+        )
+        return self._unwrap(resp)
+
+    # -- Download (stream) ----------------------------------------------------
+
+    def download_document_stream(self, document_id: str) -> requests.Response:
+        """Get a streaming response for a document download (follows redirect)."""
+        url = self.get_document_download_url(document_id)
+        resp = requests.get(url, stream=True, timeout=_UPLOAD_TIMEOUT)
+        resp.raise_for_status()
+        return resp
 
     # -- Project Info (V1) ----------------------------------------------------
 

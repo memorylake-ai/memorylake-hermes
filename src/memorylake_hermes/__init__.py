@@ -29,7 +29,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
@@ -58,6 +60,13 @@ def _load_config(hermes_home: str = "") -> dict:
         "search_threshold": float(os.environ.get("MEMORYLAKE_SEARCH_THRESHOLD", "0.3")),
         "rerank": os.environ.get("MEMORYLAKE_RERANK", "true").lower() == "true",
         "memory_mode": os.environ.get("MEMORYLAKE_MEMORY_MODE", "tool_driven"),
+        # Auto-upload
+        "auto_upload": os.environ.get("MEMORYLAKE_AUTO_UPLOAD", "true").lower() == "true",
+        # Web search defaults
+        "web_search_include_domains": os.environ.get("MEMORYLAKE_WEB_SEARCH_INCLUDE_DOMAINS", ""),
+        "web_search_exclude_domains": os.environ.get("MEMORYLAKE_WEB_SEARCH_EXCLUDE_DOMAINS", ""),
+        "web_search_country": os.environ.get("MEMORYLAKE_WEB_SEARCH_COUNTRY", ""),
+        "web_search_timezone": os.environ.get("MEMORYLAKE_WEB_SEARCH_TIMEZONE", ""),
     }
 
     if hermes_home:
@@ -177,6 +186,10 @@ STORE_SCHEMA = {
         "type": "object",
         "properties": {
             "text": {"type": "string", "description": "Information to remember."},
+            "metadata": {
+                "type": "object",
+                "description": "Optional metadata to attach to the memory (e.g. tags, category).",
+            },
         },
         "required": ["text"],
     },
@@ -210,8 +223,9 @@ FORGET_SCHEMA = {
 DOWNLOAD_SCHEMA = {
     "name": "memorylake_download",
     "description": (
-        "Get a download URL for a document stored in MemoryLake. "
-        "Returns a pre-signed URL that can be used to retrieve the file."
+        "Download a document from MemoryLake to local disk. "
+        "Returns a local file path. To send this file to the user, "
+        "include MEDIA:/path/to/file in your response."
     ),
     "parameters": {
         "type": "object",
@@ -336,6 +350,14 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         self._rerank = True
         self._sync_thread: Optional[threading.Thread] = None
         self._project_industries: Optional[List[dict]] = None
+        # Auto-upload
+        self._auto_upload = True
+        self._uploaded_record: Dict[str, float] = {}
+        # Web search config defaults
+        self._ws_include_domains: Optional[List[str]] = None
+        self._ws_exclude_domains: Optional[List[str]] = None
+        self._ws_country: Optional[str] = None
+        self._ws_timezone: Optional[str] = None
 
     @property
     def name(self) -> str:
@@ -394,9 +416,26 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         mode = str(self._config.get("memory_mode", "tool_driven")).lower()
         self._memory_mode = mode if mode in self.VALID_MEMORY_MODES else "tool_driven"
 
+        # Auto-upload config
+        self._auto_upload = self._config.get("auto_upload", True)
+        if isinstance(self._auto_upload, str):
+            self._auto_upload = self._auto_upload.lower() == "true"
+        self._load_upload_record()
+
+        # Web search config defaults
+        inc = self._config.get("web_search_include_domains", "")
+        self._ws_include_domains = [d.strip() for d in inc.split(",") if d.strip()] if inc else None
+        exc = self._config.get("web_search_exclude_domains", "")
+        self._ws_exclude_domains = [d.strip() for d in exc.split(",") if d.strip()] if exc else None
+        self._ws_country = self._config.get("web_search_country") or None
+        self._ws_timezone = self._config.get("web_search_timezone") or None
+
         self._client = MemoryLakeClient(host, api_key, project_id)
         logger.info("MemoryLake initialized: host=%s project=%s user=%s mode=%s",
                      host, project_id, self._user_id, self._memory_mode)
+
+        # Register plugin skills into external_dirs
+        self._register_skills()
 
         # Fetch project industries in background for open data tool hints
         def _fetch_project():
@@ -410,6 +449,155 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         threading.Thread(
             target=_fetch_project, daemon=True, name="memorylake-project"
         ).start()
+
+    # -- Auto-upload helpers ---------------------------------------------------
+
+    _DOC_PATH_RE = re.compile(
+        r"\[The user sent (?:a |a text )?document: '([^']+)'\."
+        r"[^]]*?(?:saved at|file is(?: also)? saved at): (/[^\]\s]+)",
+        re.IGNORECASE,
+    )
+
+    def _upload_record_path(self) -> Path:
+        p = Path(self._hermes_home) / ".memorylake"
+        p.mkdir(parents=True, exist_ok=True)
+        return p / "uploaded.json"
+
+    def _load_upload_record(self) -> None:
+        try:
+            p = self._upload_record_path()
+            if p.exists():
+                self._uploaded_record = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            self._uploaded_record = {}
+
+    def _save_upload_record(self) -> None:
+        try:
+            self._upload_record_path().write_text(
+                json.dumps(self._uploaded_record, indent=2), encoding="utf-8"
+            )
+        except Exception as e:
+            logger.warning("MemoryLake: failed to save upload record: %s", e)
+
+    def _extract_document_paths(self, text: str) -> List[str]:
+        """Extract file paths from gateway-injected document context notes."""
+        paths = []
+        for match in self._DOC_PATH_RE.finditer(text):
+            path_str = match.group(2).strip().rstrip(".")
+            if path_str and os.path.isfile(path_str):
+                paths.append(path_str)
+        return paths
+
+    def _needs_upload(self, file_path: str) -> bool:
+        """Check if a file needs uploading (new or mtime changed)."""
+        try:
+            mtime = os.path.getmtime(file_path)
+        except OSError:
+            return False
+        return self._uploaded_record.get(file_path) != mtime
+
+    def _upload_file(self, file_path: str) -> None:
+        """Upload a single file to MemoryLake via multipart upload."""
+        try:
+            file_size = os.path.getsize(file_path)
+            file_name = os.path.basename(file_path)
+            logger.info("MemoryLake auto-upload: %s (%d bytes)", file_name, file_size)
+
+            # Step 1: Create multipart upload
+            upload_info = self._client.create_multipart_upload(file_size)
+            upload_id = upload_info["uploadId"]
+            object_key = upload_info["objectKey"]
+            presigned_urls = upload_info.get("preSignedUrls", [])
+
+            if not presigned_urls:
+                logger.warning("MemoryLake auto-upload: no presigned URLs returned")
+                return
+
+            # Step 2: Upload parts
+            part_etags = []
+            with open(file_path, "rb") as f:
+                for i, url in enumerate(presigned_urls):
+                    # Read chunk — split file evenly across parts
+                    chunk_size = -(-file_size // len(presigned_urls))  # ceil division
+                    data = f.read(chunk_size)
+                    if not data:
+                        break
+                    etag = self._client.upload_part(url, data)
+                    part_etags.append({
+                        "PartNumber": i + 1,
+                        "ETag": etag,
+                    })
+
+            # Step 3: Complete upload
+            self._client.complete_multipart_upload(upload_id, object_key, part_etags)
+
+            # Step 4: Add to project
+            self._client.quick_add_document(object_key, file_name)
+
+            # Track successful upload
+            self._uploaded_record[file_path] = os.path.getmtime(file_path)
+            self._save_upload_record()
+            logger.info("MemoryLake auto-upload: %s uploaded successfully", file_name)
+        except Exception as e:
+            logger.warning("MemoryLake auto-upload failed for %s: %s", file_path, e)
+
+    def _auto_upload_documents(self, user_message: str) -> None:
+        """Detect and upload user documents from the message (fire-and-forget)."""
+        paths = self._extract_document_paths(user_message)
+        to_upload = [p for p in paths if self._needs_upload(p)]
+        if not to_upload:
+            return
+        for fp in to_upload:
+            threading.Thread(
+                target=self._upload_file,
+                args=(fp,),
+                daemon=True,
+                name=f"memorylake-upload-{os.path.basename(fp)}",
+            ).start()
+
+    # -- Download helpers ------------------------------------------------------
+
+    @staticmethod
+    def _parse_content_disposition(header: Optional[str]) -> Optional[str]:
+        """Extract filename from Content-Disposition header (RFC 5987 + standard)."""
+        if not header:
+            return None
+        # RFC 5987: filename*=UTF-8''encoded%20name.pdf (priority)
+        star = re.search(r"filename\*\s*=\s*(?:UTF-8|utf-8)?''(.+?)(?:;|$)", header, re.I)
+        if star:
+            try:
+                from urllib.parse import unquote
+                return unquote(star.group(1).strip())
+            except Exception:
+                pass
+        # Standard: filename="name.pdf" or filename=name.pdf
+        plain = re.search(r'filename\s*=\s*"?([^";]+)"?', header, re.I)
+        if plain:
+            return plain.group(1).strip()
+        return None
+
+    def _downloads_dir(self) -> Path:
+        p = Path(self._hermes_home) / ".memorylake" / "downloads"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    # -- Skills registration ---------------------------------------------------
+
+    def _register_skills(self) -> None:
+        """Add plugin skills directory to config.yaml external_dirs if needed."""
+        skills_dir = str(Path(__file__).parent / "skills")
+        if not os.path.isdir(skills_dir):
+            return
+        try:
+            from hermes_cli.config import load_config, save_config
+            config = load_config()
+            ext_dirs = config.setdefault("skills", {}).setdefault("external_dirs", [])
+            if skills_dir not in ext_dirs:
+                ext_dirs.append(skills_dir)
+                save_config(config)
+                logger.info("MemoryLake: registered skills dir %s", skills_dir)
+        except Exception as e:
+            logger.warning("MemoryLake: failed to register skills: %s", e)
 
     def system_prompt_block(self) -> str:
         if not self._client:
@@ -511,6 +699,13 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         results. Uses the CURRENT user message — no staleness.
         Skipped in tool_driven mode — the model calls memorylake_search itself.
         """
+        # Auto-upload: detect documents in user message (fire-and-forget)
+        if self._auto_upload and self._client and query:
+            try:
+                self._auto_upload_documents(query)
+            except Exception as e:
+                logger.warning("MemoryLake auto-upload detection failed: %s", e)
+
         if self._memory_mode == "tool_driven":
             logger.info("MemoryLake prefetch: injecting per-turn reminder (tool_driven mode)")
             return (
@@ -760,10 +955,12 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         if not text:
             return tool_error("text is required")
 
+        extra_meta = args.get("metadata")
         result = self._client.add_memories(
             [{"role": "user", "content": text}],
             self._user_id,
             session_id=self._session_id,
+            metadata=extra_meta if isinstance(extra_meta, dict) else None,
         )
         results = result.get("results", [])
         count = len(results)
@@ -805,12 +1002,50 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         if not document_id:
             return tool_error("document_id is required")
 
-        url = self._client.get_document_download_url(document_id)
-        return json.dumps({
-            "result": f"Download URL for document {document_id}:\n{url}",
-            "url": url,
-            "document_id": document_id,
-        })
+        download_dir = self._downloads_dir()
+        temp_path = download_dir / f".dl-{document_id}.tmp"
+
+        try:
+            resp = self._client.download_document_stream(document_id)
+
+            # Extract filename from Content-Disposition
+            cd_header = resp.headers.get("Content-Disposition")
+            cd_filename = self._parse_content_disposition(cd_header)
+
+            # Write to temp file
+            with open(temp_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            # Determine final filename
+            final_name = cd_filename or document_id
+            local_path = download_dir / final_name
+
+            # Handle collisions
+            if local_path.exists():
+                stem = local_path.stem
+                suffix = local_path.suffix
+                counter = 1
+                while local_path.exists():
+                    local_path = download_dir / f"{stem}-{counter}{suffix}"
+                    counter += 1
+
+            # Rename temp to final
+            temp_path.rename(local_path)
+
+            return json.dumps({
+                "result": (
+                    f"Document {document_id} downloaded to:\n{local_path}\n\n"
+                    f"To send this file to the user, include MEDIA:{local_path} "
+                    f"in your response."
+                ),
+                "local_path": str(local_path),
+                "document_id": document_id,
+            })
+        except Exception as e:
+            if temp_path.exists():
+                temp_path.unlink(missing_ok=True)
+            raise
 
     def _tool_web_search(self, args: dict) -> str:
         query = args.get("query", "")
@@ -826,6 +1061,10 @@ class MemoryLakeMemoryProvider(MemoryProvider):
             max_results=max_results,
             start_date=args.get("start_date"),
             end_date=args.get("end_date"),
+            include_domains=self._ws_include_domains,
+            exclude_domains=self._ws_exclude_domains,
+            country=self._ws_country,
+            timezone=self._ws_timezone,
         )
 
         results = response.get("results", [])
@@ -862,6 +1101,19 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         dataset = args.get("dataset", "")
         if not dataset:
             return tool_error("dataset is required")
+
+        # Validate dataset against project industries
+        if self._project_industries:
+            allowed_ids = [ind.get("id", "") for ind in self._project_industries]
+            if allowed_ids and dataset not in allowed_ids:
+                allowed = ", ".join(
+                    f"{ind.get('id', '')} ({ind.get('name', '')})"
+                    for ind in self._project_industries
+                )
+                return json.dumps({
+                    "error": f'Dataset "{dataset}" is not enabled for this project. '
+                             f"Allowed datasets: {allowed}",
+                })
 
         max_results = int(args.get("max_results", self._top_k))
 
