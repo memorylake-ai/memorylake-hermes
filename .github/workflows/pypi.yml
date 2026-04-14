@@ -1,0 +1,77 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    name: Build and publish to PyPI
+    runs-on: ubuntu-latest
+    environment: pypi
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Check Version Consistency
+      run: |
+        python -c "
+        import re, sys
+        # Read version from pyproject.toml
+        with open('pyproject.toml') as f:
+            text = f.read()
+        m = re.search(r'version\s*=\s*\"([^\"]+)\"', text)
+        if not m:
+            print('ERROR: version not found in pyproject.toml')
+            sys.exit(1)
+        pkg_version = m.group(1)
+
+        # Read version from plugin.yaml
+        with open('src/memorylake_hermes/plugin.yaml') as f:
+            text = f.read()
+        m = re.search(r'version:\s*(.+)', text)
+        if not m:
+            print('ERROR: version not found in plugin.yaml')
+            sys.exit(1)
+        yaml_version = m.group(1).strip()
+
+        # Check tag if running from a tag push
+        import os
+        ref = os.environ.get('GITHUB_REF', '')
+        if ref.startswith('refs/tags/v'):
+            tag_version = ref.split('refs/tags/v')[1]
+            if tag_version != pkg_version:
+                print(f'ERROR: tag version ({tag_version}) != pyproject.toml version ({pkg_version})')
+                sys.exit(1)
+
+        if pkg_version != yaml_version:
+            print(f'ERROR: pyproject.toml version ({pkg_version}) != plugin.yaml version ({yaml_version})')
+            sys.exit(1)
+
+        print(f'Version {pkg_version} is consistent across all files.')
+        "
+
+    - name: Build Package
+      run: |
+        pip install build
+        python -m build
+
+    - name: Publish to PyPI
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        verbose: true

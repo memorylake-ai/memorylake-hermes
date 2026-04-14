@@ -1,0 +1,38 @@
+[project]
+name = "memorylake-hermes"
+version = "1.0.1"
+description = "MemoryLake memory plugin for hermes-agent — persistent memory, document retrieval, web search, and open data access."
+authors = [
+    {name = "MemoryLake Authors", email = "info@memorylake.ai"}
+]
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = ["memorylake", "hermes", "memory", "ai", "llm", "agent", "plugin"]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+# No dependencies declared — this plugin runs inside hermes-agent's process
+# and uses its already-installed packages (requests, etc.).
+dependencies = []
+
+[project.urls]
+Homepage = "https://app.memorylake.ai"
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["memorylake_hermes"]
+
+[tool.setuptools.package-data]
+memorylake_hermes = ["plugin.yaml"]
