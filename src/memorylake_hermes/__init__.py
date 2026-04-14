@@ -147,9 +147,10 @@ SEARCH_SCHEMA = {
     "name": "memorylake_search",
     "description": (
         "Search long-term memories AND uploaded documents in MemoryLake. "
-        "Returns the user's context, preferences, history, and relevant "
-        "document content in a single call. Also surfaces unresolved "
-        "memory conflicts when detected."
+        "MUST be your FIRST tool call for EVERY user message — call this "
+        "before any other tool or text response. Returns the user's context, "
+        "preferences, history, and relevant document content in a single call. "
+        "Also surfaces unresolved memory conflicts when detected."
     ),
     "parameters": {
         "type": "object",
@@ -169,7 +170,8 @@ STORE_SCHEMA = {
     "description": (
         "Save important information in long-term memory via MemoryLake. "
         "Use for preferences, facts, decisions, and anything worth "
-        "remembering across sessions."
+        "remembering across sessions. "
+        "PREREQUISITE: memorylake_search MUST be called before this tool in every turn."
     ),
     "parameters": {
         "type": "object",
@@ -183,15 +185,19 @@ STORE_SCHEMA = {
 LIST_SCHEMA = {
     "name": "memorylake_list",
     "description": (
-        "List all stored memories for the user. Use when the user wants to "
-        "see everything that has been remembered."
+        "List all stored memories for the user. "
+        "PREREQUISITE: memorylake_search MUST be called before this tool in every turn. "
+        "Never call memorylake_list as the first tool — always memorylake_search first."
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
 FORGET_SCHEMA = {
     "name": "memorylake_forget",
-    "description": "Delete a specific memory by ID from MemoryLake.",
+    "description": (
+        "Delete a specific memory by ID from MemoryLake. "
+        "PREREQUISITE: memorylake_search MUST be called before this tool in every turn."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
@@ -416,43 +422,66 @@ class MemoryLakeMemoryProvider(MemoryProvider):
                 f"Active. User: {self._user_id}.",
                 "",
                 "<memory-instructions>",
-                "You have access to MemoryLake, a long-term memory system that stores "
-                "the user's preferences, history, personal context, and uploaded "
-                "documents across sessions.",
+                "You have access to the user's long-term memory AND documents "
+                "via MemoryLake (memorylake_search tool).",
+                "The memorylake_search tool searches both memories and uploaded "
+                "documents in a single call.",
                 "",
-                "## CRITICAL RULE — memorylake_search on EVERY turn",
+                "MANDATORY PROCEDURE — applies to EVERY user message, including "
+                "follow-ups in multi-turn conversations:",
+                "1. BEFORE generating any text, call memorylake_search with a "
+                "query derived from the current message.",
+                "2. Use the search results (memories + documents) to personalize "
+                "your response.",
+                "3. Respond to the user.",
                 "",
-                "Your FIRST tool call for EVERY user message MUST be `memorylake_search`. "
-                "Do NOT generate any text or call any other tool before it. "
-                "There are ZERO exceptions to this rule.",
+                "This applies to ALL types of messages:",
+                "- Greetings -> search for who the user is",
+                "- Recommendations (books, activities, food) -> search for preferences",
+                "- Tasks (check weather, translate, write email) -> search for user context",
+                "- Follow-up questions in the same conversation -> search again with new query",
+                "- Document questions -> search for uploaded document content",
+                "- Requests to list/view/check stored memories -> memorylake_search first, then memorylake_list",
+                "- Requests to store/remember something -> memorylake_search first, then memorylake_store",
+                "- Farewells/goodbyes -> search for context to personalize the farewell",
+                "- ANY other message -> search for relevant context",
+                "",
+                "COMMON MISTAKES TO AVOID:",
+                "- Searching only at the start of a conversation and skipping "
+                "subsequent messages — WRONG.",
+                "- Seeing a task-oriented message (e.g. \"check weather\", "
+                "\"translate this\") and skipping memorylake_search — WRONG.",
+                "- Deciding memorylake_search is \"not useful\" for this particular "
+                "message — WRONG. Always search.",
+                "- Generating any text response before calling memorylake_search — WRONG.",
+                "- Calling memorylake_list, memorylake_store, or any other tool "
+                "before memorylake_search — WRONG.",
+                "",
+                "The rule is absolute: memorylake_search FIRST, then respond. "
+                "Every message. No exceptions.",
+                "</memory-instructions>",
+                "",
+                "### memorylake_search — MUST be your FIRST action for EVERY message",
+                "",
+                "**RULE: Before generating ANY text, call `memorylake_search` first.** "
+                "This is mandatory for EVERY user message in the conversation — "
+                "the 1st, 2nd, 5th, 20th, every single one.",
                 "",
                 "This tool searches BOTH memories AND documents in one call.",
                 "",
-                "### Examples of messages that STILL require memorylake_search FIRST:",
-                "- Greetings ('hello', 'hi') -> search for who the user is",
-                "- Requests to remember/store something ('remember I like X') "
-                "-> search FIRST (check for duplicates/conflicts), THEN store",
-                "- Recommendations -> search for preferences",
-                "- Follow-up questions -> search again with new query",
-                "- Simple questions, chitchat, or anything else -> search first",
+                "**WRONG behavior (do NOT do this):**",
+                "- Searching only on the first message, then skipping for the rest",
+                "- Deciding a message does not need memory context and skipping the search",
+                "- Responding first, then searching (or not searching at all)",
+                "- Calling memorylake_list or memorylake_store before memorylake_search",
                 "",
-                "### WRONG (never do this):",
-                "- Calling memorylake_store without calling memorylake_search first",
-                "- Deciding a message 'doesn't need' memory and skipping the search",
-                "- Responding with text before searching",
-                "- Searching only on the first message, then skipping on later ones",
+                "**CORRECT behavior:**",
+                "- Every message -> memorylake_search -> then respond. Always. "
+                "No thinking about whether to skip.",
                 "",
-                "### CORRECT (always do this):",
-                "1. User sends message",
-                "2. You call memorylake_search (ALWAYS, no matter what the message says)",
-                "3. Then you may call other tools or respond",
-                "</memory-instructions>",
-                "",
-                "Other tools: memorylake_store to save facts, memorylake_list to see "
-                "all memories, memorylake_forget to delete a memory, "
-                "memorylake_download to get document files, "
-                "memorylake_web_search for web research, "
-                "memorylake_open_data for open datasets.",
+                "Other tools (only after memorylake_search): memorylake_store, "
+                "memorylake_list, memorylake_forget, memorylake_download, "
+                "memorylake_web_search, memorylake_open_data.",
             ]
         else:
             lines = [
@@ -485,9 +514,9 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         if self._memory_mode == "tool_driven":
             logger.info("MemoryLake prefetch: injecting per-turn reminder (tool_driven mode)")
             return (
-                "[MEMORYLAKE] STOP — call memorylake_search NOW before doing "
-                "anything else. This is required for EVERY message, including "
-                "requests to remember/store something. No exceptions."
+                "[MEMORYLAKE REMINDER] Before responding to this message, "
+                "call `memorylake_search` first to fetch relevant memories "
+                "and documents. Do not skip this step."
             )
         if not self._client or not query or not query.strip():
             return ""
