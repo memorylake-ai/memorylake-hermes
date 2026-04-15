@@ -444,7 +444,7 @@ class MemoryLakeMemoryProvider(MemoryProvider):
                 self._project_industries = project.get("industries", [])
                 logger.info("MemoryLake project info loaded: %s", project.get("name", ""))
             except Exception as e:
-                logger.warning("MemoryLake project info fetch failed: %s", e)
+                logger.error("MemoryLake project info fetch failed: %s%s", e, self._fmt_request_url(e))
 
         threading.Thread(
             target=_fetch_project, daemon=True, name="memorylake-project"
@@ -452,10 +452,14 @@ class MemoryLakeMemoryProvider(MemoryProvider):
 
     # -- Auto-upload helpers ---------------------------------------------------
 
-    _DOC_PATH_RE = re.compile(
-        r"\[The user sent (?:a |a text )?document: '([^']+)'\."
-        r"[^]]*?(?:saved at|file is(?: also)? saved at): (/[^\]\s]+)",
-        re.IGNORECASE,
+    # Match cached file paths by naming pattern, not by surrounding text.
+    # Hermes caches:  doc_{uuid12}_{name}  and  img_{uuid12}.{ext}
+    # Paths live under cache/documents/, document_cache/, cache/images/, or image_cache/.
+    _CACHED_FILE_RE = re.compile(
+        r"(?:[A-Za-z]:[/\\]|/)\S*?"
+        r"(?:cache[/\\](?:documents|images)|document_cache|image_cache)"
+        r"[/\\](?:doc|img)_[0-9a-f]{12}.*?\.[a-zA-Z0-9]{1,6}"
+        r"(?=[^a-zA-Z0-9]|$)",
     )
 
     def _upload_record_path(self) -> Path:
@@ -477,16 +481,13 @@ class MemoryLakeMemoryProvider(MemoryProvider):
                 json.dumps(self._uploaded_record, indent=2), encoding="utf-8"
             )
         except Exception as e:
-            logger.warning("MemoryLake: failed to save upload record: %s", e)
+            logger.error("MemoryLake: failed to save upload record: %s", e)
 
     def _extract_document_paths(self, text: str) -> List[str]:
-        """Extract file paths from gateway-injected document context notes."""
-        paths = []
-        for match in self._DOC_PATH_RE.finditer(text):
-            path_str = match.group(2).strip().rstrip(".")
-            if path_str and os.path.isfile(path_str):
-                paths.append(path_str)
-        return paths
+        """Extract cached file paths from prompt text by path pattern."""
+        matches = self._CACHED_FILE_RE.findall(text)
+        paths = list(dict.fromkeys(matches))  # deduplicate, preserve order
+        return [p for p in paths if os.path.isfile(p)]
 
     def _needs_upload(self, file_path: str) -> bool:
         """Check if a file needs uploading (new or mtime changed)."""
@@ -496,50 +497,70 @@ class MemoryLakeMemoryProvider(MemoryProvider):
             return False
         return self._uploaded_record.get(file_path) != mtime
 
+    @staticmethod
+    def _fmt_request_url(exc: Exception) -> str:
+        """Extract URL from requests exceptions for logging."""
+        req = getattr(exc, "request", None)
+        if req is not None:
+            return f" url={getattr(req, 'url', '')}"
+        # Walk the exception chain
+        cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
+        if cause is not None:
+            req = getattr(cause, "request", None)
+            if req is not None:
+                return f" url={getattr(req, 'url', '')}"
+        return ""
+
+    _upload_mod = None  # lazy-loaded upload skill script
+
+    def _get_upload_mod(self):
+        if self._upload_mod is None:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "memorylake_upload",
+                str(Path(__file__).parent / "skills" / "memorylake-upload" / "scripts" / "upload.py"),
+            )
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            self.__class__._upload_mod = mod
+        return self._upload_mod
+
     def _upload_file(self, file_path: str) -> None:
-        """Upload a single file to MemoryLake via multipart upload."""
+        """Upload a single file to MemoryLake, reusing the upload skill script."""
+        mod = self._get_upload_mod()
+        host = self._client._host
+        api_key = self._client._api_key
+        project_id = self._client._project_id
         try:
-            file_size = os.path.getsize(file_path)
             file_name = os.path.basename(file_path)
+            file_size = os.path.getsize(file_path)
             logger.info("MemoryLake auto-upload: %s (%d bytes)", file_name, file_size)
 
-            # Step 1: Create multipart upload
-            upload_info = self._client.create_multipart_upload(file_size)
-            upload_id = upload_info["uploadId"]
-            object_key = upload_info["objectKey"]
-            presigned_urls = upload_info.get("preSignedUrls", [])
+            if mod.is_archive(file_path):
+                import tempfile
+                tmp_dir = tempfile.mkdtemp(prefix="memorylake-extract-")
+                extracted = mod.extract_archive(file_path, tmp_dir)
+                logger.info("MemoryLake auto-upload: archive extracted %d files", len(extracted))
+                succeeded, failed = 0, 0
+                for fp in extracted:
+                    try:
+                        mod.upload_single_file(host, api_key, project_id, fp)
+                        succeeded += 1
+                        logger.info("MemoryLake auto-upload: %s done", os.path.basename(fp))
+                    except Exception as e:
+                        failed += 1
+                        logger.error("MemoryLake auto-upload: %s failed: %s%s",
+                                     os.path.basename(fp), e, self._fmt_request_url(e))
+                logger.info("MemoryLake auto-upload: archive %s — %d succeeded, %d failed, %d total",
+                            file_name, succeeded, failed, len(extracted))
+            else:
+                mod.upload_single_file(host, api_key, project_id, file_path, file_name)
+                logger.info("MemoryLake auto-upload: %s uploaded successfully", file_name)
 
-            if not presigned_urls:
-                logger.warning("MemoryLake auto-upload: no presigned URLs returned")
-                return
-
-            # Step 2: Upload parts
-            part_etags = []
-            with open(file_path, "rb") as f:
-                for i, url in enumerate(presigned_urls):
-                    # Read chunk — split file evenly across parts
-                    chunk_size = -(-file_size // len(presigned_urls))  # ceil division
-                    data = f.read(chunk_size)
-                    if not data:
-                        break
-                    etag = self._client.upload_part(url, data)
-                    part_etags.append({
-                        "PartNumber": i + 1,
-                        "ETag": etag,
-                    })
-
-            # Step 3: Complete upload
-            self._client.complete_multipart_upload(upload_id, object_key, part_etags)
-
-            # Step 4: Add to project
-            self._client.quick_add_document(object_key, file_name)
-
-            # Track successful upload
             self._uploaded_record[file_path] = os.path.getmtime(file_path)
             self._save_upload_record()
-            logger.info("MemoryLake auto-upload: %s uploaded successfully", file_name)
         except Exception as e:
-            logger.warning("MemoryLake auto-upload failed for %s: %s", file_path, e)
+            logger.error("MemoryLake auto-upload failed for %s: %s%s", file_path, e, self._fmt_request_url(e))
 
     def _auto_upload_documents(self, user_message: str) -> None:
         """Detect and upload user documents from the message (fire-and-forget)."""
@@ -597,7 +618,7 @@ class MemoryLakeMemoryProvider(MemoryProvider):
                 save_config(config)
                 logger.info("MemoryLake: registered skills dir %s", skills_dir)
         except Exception as e:
-            logger.warning("MemoryLake: failed to register skills: %s", e)
+            logger.error("MemoryLake: failed to register skills: %s", e)
 
     def system_prompt_block(self) -> str:
         if not self._client:
@@ -704,7 +725,7 @@ class MemoryLakeMemoryProvider(MemoryProvider):
             try:
                 self._auto_upload_documents(query)
             except Exception as e:
-                logger.warning("MemoryLake auto-upload detection failed: %s", e)
+                logger.error("MemoryLake auto-upload detection failed: %s", e)
 
         if self._memory_mode == "tool_driven":
             logger.info("MemoryLake prefetch: injecting per-turn reminder (tool_driven mode)")
@@ -741,14 +762,14 @@ class MemoryLakeMemoryProvider(MemoryProvider):
                 memory_results = mem_future.result(timeout=10.0)
                 logger.info("MemoryLake prefetch: %d memories found", len(memory_results))
             except Exception as e:
-                logger.warning("MemoryLake memory prefetch failed: %s", e)
+                logger.error("MemoryLake memory prefetch failed: %s%s", e, self._fmt_request_url(e))
 
             try:
                 doc_data = doc_future.result(timeout=10.0)
                 doc_results = doc_data.get("results", [])
                 logger.info("MemoryLake prefetch: %d documents found", len(doc_results))
             except Exception as e:
-                logger.warning("MemoryLake document prefetch failed: %s", e)
+                logger.error("MemoryLake document prefetch failed: %s%s", e, self._fmt_request_url(e))
 
         if not memory_results and not doc_results:
             return ""
@@ -800,7 +821,7 @@ class MemoryLakeMemoryProvider(MemoryProvider):
                 )
                 logger.info("MemoryLake sync_turn result: %s", result)
             except Exception as e:
-                logger.warning("MemoryLake sync_turn failed: %s", e, exc_info=True)
+                logger.error("MemoryLake sync_turn failed: %s%s", e, self._fmt_request_url(e), exc_info=True)
 
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=5.0)
@@ -826,7 +847,7 @@ class MemoryLakeMemoryProvider(MemoryProvider):
                 )
                 logger.info("MemoryLake on_memory_write result: %s", result)
             except Exception as e:
-                logger.warning("MemoryLake memory mirror failed: %s", e, exc_info=True)
+                logger.error("MemoryLake memory mirror failed: %s%s", e, self._fmt_request_url(e), exc_info=True)
 
         threading.Thread(
             target=_write, daemon=True, name="memorylake-memwrite"

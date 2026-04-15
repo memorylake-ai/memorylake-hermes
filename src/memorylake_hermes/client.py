@@ -335,7 +335,7 @@ class MemoryLakeClient:
     # -- Upload (V1) -----------------------------------------------------------
 
     def create_multipart_upload(self, file_size: int) -> Dict[str, Any]:
-        """Create a multipart upload session. Returns uploadId, objectKey, preSignedUrls."""
+        """Create a multipart upload session. Returns upload_id, object_key, part_items."""
         resp = requests.post(
             self._url(f"{self._upload_v1}/create-multipart"),
             json={"file_size": file_size},
