@@ -73,35 +73,6 @@ echo "Installed memorylake plugin to $TARGET_DIR"
 hermes config set memory.provider memorylake
 echo "Set memory.provider = memorylake"
 
-# Ensure env_passthrough contains all required MEMORYLAKE_* vars
-CONFIG_FILE="$(hermes config path)"
-REQUIRED_VARS=(
-    HERMES_HOME
-    MEMORYLAKE_HOST
-    MEMORYLAKE_API_KEY
-    MEMORYLAKE_PROJECT_ID
-)
-
-# If env_passthrough section doesn't exist yet, create it
-if ! grep -q '^env_passthrough:' "$CONFIG_FILE" 2>/dev/null; then
-    printf '\nenv_passthrough:\n' >> "$CONFIG_FILE"
-fi
-
-# Append only missing entries
-ADDED=0
-for VAR in "${REQUIRED_VARS[@]}"; do
-    if ! grep -q "^  - ${VAR}$" "$CONFIG_FILE" 2>/dev/null; then
-        sed -i.bak "/^env_passthrough:/a\\
-  - ${VAR}" "$CONFIG_FILE" && rm -f "$CONFIG_FILE.bak"
-        ADDED=$((ADDED + 1))
-    fi
-done
-
-if [[ $ADDED -gt 0 ]]; then
-    echo "Added $ADDED env_passthrough entries"
-else
-    echo "env_passthrough already up to date"
-fi
 
 # Configure credentials
 if [[ -z "$API_KEY" ]]; then

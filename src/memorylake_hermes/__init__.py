@@ -401,8 +401,9 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         logger.info("MemoryLake initialized: host=%s project=%s user=%s mode=%s",
                      host, project_id, self._user_id, self._memory_mode)
 
-        # Register plugin skills into external_dirs
+        # Register plugin skills and env_passthrough into config
         self._register_skills()
+        self._ensure_env_passthrough()
 
         # Fetch project industries in background for open data tool hints
         def _fetch_project():
@@ -551,6 +552,13 @@ class MemoryLakeMemoryProvider(MemoryProvider):
 
     # -- Skills registration ---------------------------------------------------
 
+    _ENV_PASSTHROUGH_VARS = [
+        "HERMES_HOME",
+        "MEMORYLAKE_HOST",
+        "MEMORYLAKE_API_KEY",
+        "MEMORYLAKE_PROJECT_ID",
+    ]
+
     def _register_skills(self) -> None:
         """Add plugin skills directory to config.yaml external_dirs if needed."""
         skills_dir = str(Path(__file__).parent / "skills")
@@ -566,6 +574,20 @@ class MemoryLakeMemoryProvider(MemoryProvider):
                 logger.info("MemoryLake: registered skills dir %s", skills_dir)
         except Exception as e:
             logger.error("MemoryLake: failed to register skills: %s", e)
+
+    def _ensure_env_passthrough(self) -> None:
+        """Ensure required env vars are in config.yaml env_passthrough list."""
+        try:
+            from hermes_cli.config import load_config, save_config
+            config = load_config()
+            existing = config.setdefault("env_passthrough", [])
+            missing = [v for v in self._ENV_PASSTHROUGH_VARS if v not in existing]
+            if missing:
+                existing.extend(missing)
+                save_config(config)
+                logger.info("MemoryLake: added env_passthrough entries: %s", missing)
+        except Exception as e:
+            logger.error("MemoryLake: failed to update env_passthrough: %s", e)
 
     def system_prompt_block(self) -> str:
         if not self._client:
