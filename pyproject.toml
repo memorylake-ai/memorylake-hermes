@@ -1,6 +1,6 @@
 [project]
 name = "memorylake-hermes"
-version = "1.0.2"
+version = "1.1.0"
 description = "MemoryLake memory plugin for hermes-agent — persistent memory, document retrieval, web search, and open data access."
 authors = [
     {name = "MemoryLake Authors", email = "info@memorylake.ai"}
