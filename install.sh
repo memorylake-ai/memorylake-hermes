@@ -73,31 +73,45 @@ echo "Installed memorylake plugin to $TARGET_DIR"
 hermes config set memory.provider memorylake
 echo "Set memory.provider = memorylake"
 
-# Write env_passthrough so MEMORYLAKE_* vars are forwarded to the agent process
+# Ensure env_passthrough contains all required MEMORYLAKE_* vars
 CONFIG_FILE="$(hermes config path)"
-if [[ -f "$CONFIG_FILE" ]]; then
-    # Remove existing env_passthrough block (if any) to avoid duplicates
-    sed -i.bak '/^env_passthrough:/,/^[^ ]/{ /^env_passthrough:/d; /^  - /d; }' "$CONFIG_FILE"
-    rm -f "$CONFIG_FILE.bak"
+REQUIRED_VARS=(
+    HERMES_HOME
+    MEMORYLAKE_HOST
+    MEMORYLAKE_API_KEY
+    MEMORYLAKE_PROJECT_ID
+    MEMORYLAKE_USER_ID
+    MEMORYLAKE_TOP_K
+    MEMORYLAKE_SEARCH_THRESHOLD
+    MEMORYLAKE_RERANK
+    MEMORYLAKE_MEMORY_MODE
+    MEMORYLAKE_AUTO_UPLOAD
+    MEMORYLAKE_WEB_SEARCH_INCLUDE_DOMAINS
+    MEMORYLAKE_WEB_SEARCH_EXCLUDE_DOMAINS
+    MEMORYLAKE_WEB_SEARCH_COUNTRY
+    MEMORYLAKE_WEB_SEARCH_TIMEZONE
+)
+
+# If env_passthrough section doesn't exist yet, create it
+if ! grep -q '^env_passthrough:' "$CONFIG_FILE" 2>/dev/null; then
+    printf '\nenv_passthrough:\n' >> "$CONFIG_FILE"
 fi
-cat >> "$CONFIG_FILE" <<'ENVBLOCK'
-env_passthrough:
-  - HERMES_HOME
-  - MEMORYLAKE_HOST
-  - MEMORYLAKE_API_KEY
-  - MEMORYLAKE_PROJECT_ID
-  - MEMORYLAKE_USER_ID
-  - MEMORYLAKE_TOP_K
-  - MEMORYLAKE_SEARCH_THRESHOLD
-  - MEMORYLAKE_RERANK
-  - MEMORYLAKE_MEMORY_MODE
-  - MEMORYLAKE_AUTO_UPLOAD
-  - MEMORYLAKE_WEB_SEARCH_INCLUDE_DOMAINS
-  - MEMORYLAKE_WEB_SEARCH_EXCLUDE_DOMAINS
-  - MEMORYLAKE_WEB_SEARCH_COUNTRY
-  - MEMORYLAKE_WEB_SEARCH_TIMEZONE
-ENVBLOCK
-echo "Configured env_passthrough for MEMORYLAKE_* variables"
+
+# Append only missing entries
+ADDED=0
+for VAR in "${REQUIRED_VARS[@]}"; do
+    if ! grep -q "^  - ${VAR}$" "$CONFIG_FILE" 2>/dev/null; then
+        sed -i.bak "/^env_passthrough:/a\\
+  - ${VAR}" "$CONFIG_FILE" && rm -f "$CONFIG_FILE.bak"
+        ADDED=$((ADDED + 1))
+    fi
+done
+
+if [[ $ADDED -gt 0 ]]; then
+    echo "Added $ADDED env_passthrough entries"
+else
+    echo "env_passthrough already up to date"
+fi
 
 # Configure credentials
 if [[ -z "$API_KEY" ]]; then
