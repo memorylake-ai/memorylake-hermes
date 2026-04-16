@@ -1,6 +1,5 @@
 """MemoryLake HTTP client — thin wrapper over the MemoryLake V2/V1 REST API.
 
-Uses ``requests`` (already a hermes-agent dependency via RetainDB).
 All methods are synchronous and raise on HTTP errors.
 """
 

@@ -2,13 +2,13 @@
 """Migrate hermes sessions and memory files to MemoryLake.
 
 Usage:
-    python migrate.py --host HOST --api-key KEY --project-id PID [--user-id UID] [--session-id SID]
+    python migrate.py
+
+Config is auto-resolved via get_config.py (env vars + $HERMES_HOME/memorylake.json).
 
 Migrates:
     - Session conversations ($HERMES_HOME/sessions/*.jsonl)
     - Memory files ($HERMES_HOME/memories/MEMORY.md, USER.md, and any other files)
-
-If --host/--api-key/--project-id are not provided, reads from $HERMES_HOME/memorylake.json.
 """
 
 import json

@@ -26,7 +26,7 @@ except ImportError:
 def get_config() -> dict:
     hermes_home = str(get_hermes_home())
 
-    # Base: all MEMORYLAKE_ env vars (mirrors __init__.py _load_config)
+    # Base: all MEMORYLAKE_ env vars
     config = {
         "host": os.environ.get("MEMORYLAKE_HOST", "https://app.memorylake.ai"),
         "api_key": os.environ.get("MEMORYLAKE_API_KEY", ""),

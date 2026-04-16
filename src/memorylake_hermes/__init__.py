@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _load_config(hermes_home: str = "") -> dict:
-    """Load config from env vars, with $HERMES_HOME/memorylake.json overrides."""
+    """Load config via the shared get_config module."""
     from .get_config import get_config
     return get_config()
 
@@ -485,7 +485,7 @@ class MemoryLakeMemoryProvider(MemoryProvider):
             import importlib.util
             spec = importlib.util.spec_from_file_location(
                 "memorylake_upload",
-                str(Path(__file__).parent / "skills" / "memorylake-upload" / "scripts" / "upload.py"),
+                str(Path(__file__).parent / "skills" / "memorylake" / "memorylake-upload" / "scripts" / "upload.py"),
             )
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
