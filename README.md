@@ -58,11 +58,16 @@ memory:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MEMORYLAKE_HOST` | `https://app.memorylake.ai` | MemoryLake server URL |
-| `MEMORYLAKE_USER_ID` | `hermes-user` | User identifier (auto-set to platform user ID in gateway mode) |
+| `MEMORYLAKE_USER_ID` | `default` | User identifier (auto-set to platform user ID in gateway mode) |
 | `MEMORYLAKE_TOP_K` | `5` | Max recall results |
 | `MEMORYLAKE_SEARCH_THRESHOLD` | `0.3` | Min similarity score (0-1) |
 | `MEMORYLAKE_RERANK` | `true` | Rerank search results |
 | `MEMORYLAKE_MEMORY_MODE` | `tool_driven` | Recall mode: `tool_driven` or `prefetch` |
+| `MEMORYLAKE_AUTO_UPLOAD` | `true` | Auto-upload user documents to MemoryLake |
+| `MEMORYLAKE_WEB_SEARCH_INCLUDE_DOMAINS` | | Comma-separated list of domains to include in web search |
+| `MEMORYLAKE_WEB_SEARCH_EXCLUDE_DOMAINS` | | Comma-separated list of domains to exclude from web search |
+| `MEMORYLAKE_WEB_SEARCH_COUNTRY` | | Country code for web search results |
+| `MEMORYLAKE_WEB_SEARCH_TIMEZONE` | | Timezone for web search results |
 
 Config can also be set via `~/.hermes/memorylake.json` (overrides env vars).
 
