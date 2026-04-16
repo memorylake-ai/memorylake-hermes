@@ -39,17 +39,39 @@ jobs:
     - name: Verify Wheel Contents
       run: |
         python -c "
-        import zipfile, sys
+        import zipfile, sys, fnmatch
         whl = list(__import__('pathlib').Path('dist').glob('*.whl'))[0]
-        z = zipfile.ZipFile(whl)
-        names = z.namelist()
+        names = zipfile.ZipFile(whl).namelist()
         print('Wheel contents:')
         for n in names:
             print(f'  {n}')
-        required = ['memorylake_hermes/__init__.py', 'memorylake_hermes/client.py', 'memorylake_hermes/plugin.yaml']
+        required = [
+            'memorylake_hermes/__init__.py',
+            'memorylake_hermes/client.py',
+            'memorylake_hermes/plugin.yaml',
+            'memorylake_hermes/skills/memorylake/DESCRIPTION.md',
+            'memorylake_hermes/skills/memorylake/memorylake-api/SKILL.md',
+            'memorylake_hermes/skills/memorylake/memorylake-config/SKILL.md',
+            'memorylake_hermes/skills/memorylake/memorylake-upload/SKILL.md',
+            'memorylake_hermes/skills/memorylake/migrate-to-memorylake/SKILL.md',
+        ]
         missing = [f for f in required if f not in names]
         if missing:
-            print(f'ERROR: missing files: {missing}')
+            print(f'ERROR: missing from wheel: {missing}')
             sys.exit(1)
-        print('All required files present.')
+        skills = [n for n in names if fnmatch.fnmatch(n, 'memorylake_hermes/skills/**')]
+        print(f'Wheel OK — {len(skills)} skills files included.')
+        "
+
+    - name: Verify Sdist Contents
+      run: |
+        python -c "
+        import tarfile, sys, fnmatch
+        sdist = list(__import__('pathlib').Path('dist').glob('*.tar.gz'))[0]
+        names = tarfile.open(sdist).getnames()
+        skills = [n for n in names if '/memorylake_hermes/skills/' in n]
+        if not skills:
+            print('ERROR: no skills files found in sdist')
+            sys.exit(1)
+        print(f'Sdist OK — {len(skills)} skills files included.')
         "
