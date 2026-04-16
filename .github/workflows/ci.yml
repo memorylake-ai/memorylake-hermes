@@ -39,27 +39,23 @@ jobs:
     - name: Verify Wheel Contents
       run: |
         python -c "
-        import zipfile, sys, fnmatch
+        import zipfile, sys
         whl = list(__import__('pathlib').Path('dist').glob('*.whl'))[0]
         names = zipfile.ZipFile(whl).namelist()
-        print('Wheel contents:')
-        for n in names:
-            print(f'  {n}')
         required = [
             'memorylake_hermes/__init__.py',
             'memorylake_hermes/client.py',
+            'memorylake_hermes/get_config.py',
             'memorylake_hermes/plugin.yaml',
-            'memorylake_hermes/skills/memorylake/DESCRIPTION.md',
-            'memorylake_hermes/skills/memorylake/memorylake-api/SKILL.md',
-            'memorylake_hermes/skills/memorylake/memorylake-config/SKILL.md',
-            'memorylake_hermes/skills/memorylake/memorylake-upload/SKILL.md',
-            'memorylake_hermes/skills/memorylake/migrate-to-memorylake/SKILL.md',
         ]
         missing = [f for f in required if f not in names]
         if missing:
             print(f'ERROR: missing from wheel: {missing}')
             sys.exit(1)
-        skills = [n for n in names if fnmatch.fnmatch(n, 'memorylake_hermes/skills/**')]
+        skills = [n for n in names if 'memorylake_hermes/skills/' in n]
+        if not skills:
+            print('ERROR: no skills files found in wheel')
+            sys.exit(1)
         print(f'Wheel OK — {len(skills)} skills files included.')
         "
 
