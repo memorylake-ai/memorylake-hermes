@@ -1,7 +1,7 @@
 ---
 name: memorylake-api
 description: Use when the user asks about MemoryLake features or wants to perform a MemoryLake action not covered by existing tools or skills. Catch-all for direct API calls — project management, document management, memory trace, statistics, and more.
-version: 1.1.0
+version: 1.1.1
 ---
 
 # MemoryLake API

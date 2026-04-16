@@ -1,7 +1,7 @@
 ---
 name: migrate-to-memorylake
 description: Migrates memories, conversations to MemoryLake. Use when the user wants to import existing memories, conversations into MemoryLake.
-version: 1.1.0
+version: 1.1.1
 ---
 
 # Migrate Memories to MemoryLake
