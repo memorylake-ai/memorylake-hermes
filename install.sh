@@ -73,6 +73,7 @@ echo "Installed memorylake plugin to $TARGET_DIR"
 hermes config set memory.provider memorylake
 echo "Set memory.provider = memorylake"
 
+
 # Configure credentials
 if [[ -z "$API_KEY" ]]; then
     read -rp "MemoryLake API key: " API_KEY

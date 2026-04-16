@@ -7,3 +7,4 @@ build/
 .eggs/
 .env
 .pytest_cache/
+.worktrees/
