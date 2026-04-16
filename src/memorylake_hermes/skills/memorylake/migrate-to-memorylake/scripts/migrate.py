@@ -8,7 +8,7 @@ Config is auto-resolved via get_config.py (env vars + $HERMES_HOME/memorylake.js
 
 Migrates:
     - Session conversations ($HERMES_HOME/sessions/*.jsonl)
-    - Memory files ($HERMES_HOME/memories/MEMORY.md, USER.md, and any other files)
+    - Memory files ($HERMES_HOME/memories/MEMORY.md, USER.md)
 """
 
 import json
@@ -90,7 +90,7 @@ def parse_session_file(path: str) -> list[dict]:
 
 def migrate_memory_files(host: str, api_key: str, project_id: str,
                          hermes_home: str) -> tuple[int, int]:
-    """Migrate memory files (MEMORY.md, USER.md, etc.) to MemoryLake.
+    """Migrate memory files (MEMORY.md, USER.md) to MemoryLake.
 
     Returns (submitted, errors).
     """
@@ -99,11 +99,12 @@ def migrate_memory_files(host: str, api_key: str, project_id: str,
         print("No memories directory found, skipping memory file migration.")
         return 0, 0
 
-    # Collect all files in memories/, sorted alphabetically
-    files = sorted(
-        f for f in memories_dir.iterdir()
-        if f.is_file() and not f.name.endswith(".lock")
-    )
+    # Only migrate MEMORY.md and USER.md
+    files = [
+        memories_dir / name
+        for name in ("MEMORY.md", "USER.md")
+        if (memories_dir / name).is_file()
+    ]
     if not files:
         print("No memory files found.")
         return 0, 0

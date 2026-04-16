@@ -43,7 +43,7 @@ python3 {SKILL_DIR}/scripts/get_config.py
 
 The script outputs JSON with `host`, `api_key`, `project_id`, `hermes_home`, etc. If it exits with an error, stop and inform the user.
 
-`hermes_home` is the resolved absolute path of the hermes home directory (e.g. `/Users/henry/.hermes`).
+`hermes_home` is the resolved absolute path of the hermes home directory (e.g. `~/.hermes`).
 
 ### Step 2 — Find Session Files
 
