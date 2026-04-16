@@ -1,7 +1,7 @@
 ---
 name: memorylake-upload
 description: Use when the user wants to upload files, documents, PDFs, archives, directories, or other data to MemoryLake. Supports single files, archives (zip, tar.gz, tar.bz2, tar.xz, 7z) which are extracted then uploaded, and directories which are recursively uploaded.
-version: 2.0.0
+version: 1.1.0
 ---
 
 # MemoryLake File Upload
