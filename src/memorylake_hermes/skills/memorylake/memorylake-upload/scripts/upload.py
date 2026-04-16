@@ -10,6 +10,8 @@ Supports:
     - Directories: recursively traversed, all files uploaded (max 500)
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -49,11 +51,21 @@ def extract_archive(archive_path: str, dest_dir: str) -> list[str]:
 
     if lower.endswith(".zip"):
         with zipfile.ZipFile(archive_path) as zf:
-            zf.extractall(dest_dir)
-            files = [
-                os.path.join(dest_dir, n) for n in zf.namelist()
-                if not n.endswith("/")
-            ]
+            for info in zf.infolist():
+                # Fix CJK filenames: no UTF-8 flag → CP437 decoded → re-encode and try UTF-8/GBK
+                if not (info.flag_bits & 0x800) and not info.filename.isascii():
+                    try:
+                        raw = info.filename.encode("cp437")
+                        info.filename = raw.decode("utf-8")
+                    except (UnicodeDecodeError, UnicodeEncodeError):
+                        try:
+                            raw = info.filename.encode("cp437")
+                            info.filename = raw.decode("gbk")
+                        except (UnicodeDecodeError, UnicodeEncodeError):
+                            pass
+                zf.extract(info, dest_dir)
+                if not info.is_dir():
+                    files.append(os.path.join(dest_dir, info.filename))
     elif lower.endswith((".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar")):
         with tarfile.open(archive_path) as tf:
             tf.extractall(dest_dir, filter="data")
@@ -190,23 +202,22 @@ def upload_single_file(host: str, api_key: str, project_id: str,
 
     # Step 1: Create
     info = create_multipart_upload(host, api_key, file_size)
-    upload_id = info["uploadId"]
-    object_key = info["objectKey"]
-    presigned_urls = info.get("preSignedUrls", [])
+    upload_id = info["upload_id"]
+    object_key = info["object_key"]
+    part_items = info.get("part_items", [])
 
-    if not presigned_urls:
-        raise RuntimeError("No presigned URLs returned")
+    if not part_items:
+        raise RuntimeError("No part_items returned")
 
     # Step 2: Upload parts
     part_etags = []
-    chunk_size = -(-file_size // len(presigned_urls))
     with open(file_path, "rb") as f:
-        for i, url in enumerate(presigned_urls):
-            data = f.read(chunk_size)
+        for part in part_items:
+            data = f.read(part["size"])
             if not data:
                 break
-            etag = upload_part(url, data)
-            part_etags.append({"PartNumber": i + 1, "ETag": etag})
+            etag = upload_part(part["upload_url"], data)
+            part_etags.append({"number": part["number"], "etag": etag})
 
     # Step 3: Complete
     complete_multipart(host, api_key, upload_id, object_key, part_etags)
@@ -217,21 +228,21 @@ def upload_single_file(host: str, api_key: str, project_id: str,
     return result
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Upload files to MemoryLake")
-    parser.add_argument("path", help="File, archive, or directory to upload")
-    parser.add_argument("--host", required=True, help="MemoryLake host URL")
-    parser.add_argument("--api-key", required=True, help="API key")
-    parser.add_argument("--project-id", required=True, help="Project ID")
-    parser.add_argument("--name", help="Override filename for single file upload")
-    args = parser.parse_args()
+def upload_path(host: str, api_key: str, project_id: str,
+                path: str, display_name: str | None = None) -> tuple[int, int]:
+    """Upload a file, archive, or directory to MemoryLake.
 
-    target = os.path.abspath(args.path)
+    Handles type detection automatically:
+    - Directory: recursively collects files and uploads each
+    - Archive: extracts then uploads each file inside
+    - Single file: uploads directly
+
+    Returns (succeeded, failed) counts.
+    """
+    target = os.path.abspath(path)
     if not os.path.exists(target):
-        print(f"ERROR: Path does not exist: {target}", file=sys.stderr)
-        sys.exit(1)
+        raise FileNotFoundError(f"Path does not exist: {target}")
 
-    host = args.host.rstrip("/")
     files_to_upload: list[tuple[str, str | None]] = []  # (path, display_name)
 
     if os.path.isdir(target):
@@ -246,11 +257,10 @@ def main():
         print(f"  Extracted {len(extracted)} files")
         files_to_upload = [(f, None) for f in extracted]
     else:
-        files_to_upload = [(target, args.name)]
+        files_to_upload = [(target, display_name)]
 
     if not files_to_upload:
-        print("No files to upload.")
-        sys.exit(0)
+        return 0, 0
 
     succeeded = 0
     failed = 0
@@ -258,7 +268,7 @@ def main():
     if len(files_to_upload) == 1:
         fp, name = files_to_upload[0]
         try:
-            upload_single_file(host, args.api_key, args.project_id, fp, name)
+            upload_single_file(host, api_key, project_id, fp, name)
             succeeded = 1
         except Exception as e:
             print(f"  FAILED: {e}", file=sys.stderr)
@@ -267,7 +277,7 @@ def main():
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
             futures = {
                 pool.submit(
-                    upload_single_file, host, args.api_key, args.project_id, fp, name
+                    upload_single_file, host, api_key, project_id, fp, name
                 ): fp
                 for fp, name in files_to_upload
             }
@@ -280,7 +290,24 @@ def main():
                     print(f"  FAILED {os.path.basename(fp)}: {e}", file=sys.stderr)
                     failed += 1
 
-    print(f"\nSummary: {succeeded} uploaded, {failed} failed, {len(files_to_upload)} total")
+    return succeeded, failed
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Upload files to MemoryLake")
+    parser.add_argument("path", help="File, archive, or directory to upload")
+    parser.add_argument("--host", required=True, help="MemoryLake host URL")
+    parser.add_argument("--api-key", required=True, help="API key")
+    parser.add_argument("--project-id", required=True, help="Project ID")
+    parser.add_argument("--name", help="Override filename for single file upload")
+    args = parser.parse_args()
+
+    succeeded, failed = upload_path(
+        args.host.rstrip("/"), args.api_key, args.project_id,
+        args.path, args.name,
+    )
+    total = succeeded + failed
+    print(f"\nSummary: {succeeded} uploaded, {failed} failed, {total} total")
     sys.exit(1 if failed > 0 and succeeded == 0 else 0)
 
 

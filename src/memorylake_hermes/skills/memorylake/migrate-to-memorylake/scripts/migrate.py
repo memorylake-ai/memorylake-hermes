@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Migrate hermes session conversations to MemoryLake.
+"""Migrate hermes sessions and memory files to MemoryLake.
 
 Usage:
     python migrate.py --host HOST --api-key KEY --project-id PID [--user-id UID] [--session-id SID]
 
+Migrates:
+    - Session conversations ($HERMES_HOME/sessions/*.jsonl)
+    - Memory files ($HERMES_HOME/memories/MEMORY.md, USER.md, and any other files)
+
 If --host/--api-key/--project-id are not provided, reads from $HERMES_HOME/memorylake.json.
 """
 
-import argparse
 import json
 import os
 import sys
@@ -17,15 +20,6 @@ import requests
 
 BATCH_SIZE = 20
 TIMEOUT = 30.0
-
-
-def load_config_from_file() -> dict:
-    """Load config from $HERMES_HOME/memorylake.json."""
-    hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
-    config_path = Path(hermes_home) / "memorylake.json"
-    if config_path.exists():
-        return json.loads(config_path.read_text(encoding="utf-8"))
-    return {}
 
 
 def headers(api_key: str) -> dict:
@@ -94,38 +88,98 @@ def parse_session_file(path: str) -> list[dict]:
     return messages
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Migrate hermes sessions to MemoryLake")
-    parser.add_argument("--host", help="MemoryLake host URL")
-    parser.add_argument("--api-key", help="API key")
-    parser.add_argument("--project-id", help="Project ID")
-    parser.add_argument("--user-id", help="Filter sessions by user ID")
-    parser.add_argument("--session-id", help="Migrate a specific session only")
-    args = parser.parse_args()
+def migrate_memory_files(host: str, api_key: str, project_id: str,
+                         hermes_home: str) -> tuple[int, int]:
+    """Migrate memory files (MEMORY.md, USER.md, etc.) to MemoryLake.
 
-    # Resolve config
-    file_cfg = load_config_from_file()
-    host = (args.host or file_cfg.get("host", "https://app.memorylake.ai")).rstrip("/")
-    api_key = args.api_key or file_cfg.get("api_key", "")
-    project_id = args.project_id or file_cfg.get("project_id", "")
+    Returns (submitted, errors).
+    """
+    memories_dir = Path(hermes_home) / "memories"
+    if not memories_dir.is_dir():
+        print("No memories directory found, skipping memory file migration.")
+        return 0, 0
+
+    # Collect all files in memories/, sorted alphabetically
+    files = sorted(
+        f for f in memories_dir.iterdir()
+        if f.is_file() and not f.name.endswith(".lock")
+    )
+    if not files:
+        print("No memory files found.")
+        return 0, 0
+
+    print(f"\nMigrating {len(files)} memory file(s) from {memories_dir}")
+    submitted = 0
+    errors = 0
+
+    for mf in files:
+        try:
+            content = mf.read_text(encoding="utf-8").strip()
+        except Exception as e:
+            print(f"  WARNING: Failed to read {mf.name}: {e}", file=sys.stderr)
+            errors += 1
+            continue
+
+        if not content:
+            print(f"  Skipped: {mf.name} (empty)")
+            continue
+
+        # Submit as a single user message with filename in metadata
+        payload = {
+            "messages": [{"role": "user", "content": content}],
+            "user_id": "default",
+            "metadata": {
+                "source": "HERMES_MIGRATION",
+                "filename": mf.name,
+            },
+            "infer": True,
+        }
+
+        try:
+            resp = requests.post(
+                f"{host}/openapi/memorylake/api/v2/projects/{project_id}/memories",
+                json=payload,
+                headers=headers(api_key),
+                timeout=TIMEOUT,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            success = result.get("success", False)
+            status = "OK" if success else result.get("message", "failed")
+            print(f"  {mf.name}: {len(content)} chars — {status}")
+            submitted += 1
+        except Exception as e:
+            print(f"  {mf.name}: FAILED — {e}", file=sys.stderr)
+            errors += 1
+
+    return submitted, errors
+
+
+def main():
+    # Load get_config.py from the same scripts/ directory
+    scripts_dir = str(Path(__file__).resolve().parent)
+    sys.path.insert(0, scripts_dir)
+    from get_config import get_config
+    cfg = get_config()
+    host = cfg["host"]
+    api_key = cfg.get("api_key", "")
+    project_id = cfg.get("project_id", "")
+    hermes_home = cfg["hermes_home"]
 
     if not api_key or not project_id:
         print("ERROR: api_key and project_id are required. "
-              "Provide via flags or $HERMES_HOME/memorylake.json", file=sys.stderr)
+              "Set MEMORYLAKE_API_KEY/MEMORYLAKE_PROJECT_ID in $HERMES_HOME/.env "
+              "or add them to $HERMES_HOME/memorylake.json", file=sys.stderr)
         sys.exit(1)
 
     # Find session files
-    hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
     sessions_dir = Path(hermes_home) / "sessions"
 
     if not sessions_dir.is_dir():
         print(f"ERROR: Sessions directory not found: {sessions_dir}", file=sys.stderr)
         sys.exit(1)
 
-    if args.session_id:
-        session_files = list(sessions_dir.glob(f"{args.session_id}*.jsonl"))
-    else:
-        session_files = sorted(sessions_dir.glob("*.jsonl"))
+    session_files = sorted(sessions_dir.glob("*.jsonl"))
 
     if not session_files:
         print("No session files found.")
@@ -169,14 +223,20 @@ def main():
 
         total_sessions += 1
 
+    # -- Phase 2: Memory files --------------------------------------------------
+    mem_submitted, mem_errors = migrate_memory_files(host, api_key, project_id, hermes_home)
+    total_api_calls += mem_submitted
+    total_errors += mem_errors
+
     print(f"\n{'='*60}")
     print(f"Migration complete:")
     print(f"  Sessions processed: {total_sessions}")
+    print(f"  Memory files:       {mem_submitted}")
     print(f"  API calls made:     {total_api_calls}")
     print(f"  Errors:             {total_errors}")
     print(f"{'='*60}")
 
-    sys.exit(1 if total_errors > 0 and total_sessions == 0 else 0)
+    sys.exit(1 if total_errors > 0 and total_sessions == 0 and mem_submitted == 0 else 0)
 
 
 if __name__ == "__main__":

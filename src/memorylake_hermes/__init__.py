@@ -15,7 +15,7 @@ Config via environment variables (profile-scoped via each profile's .env):
   MEMORYLAKE_API_KEY        — API key (required)
   MEMORYLAKE_PROJECT_ID     — Project ID (required)
   MEMORYLAKE_HOST           — Server URL (default: https://app.memorylake.ai)
-  MEMORYLAKE_USER_ID        — User identifier (default: hermes-user)
+  MEMORYLAKE_USER_ID        — User identifier (default: default)
   MEMORYLAKE_TOP_K          — Max recall results (default: 5)
   MEMORYLAKE_SEARCH_THRESHOLD — Min similarity 0-1 (default: 0.3)
   MEMORYLAKE_RERANK         — Rerank results (default: true)
@@ -49,41 +49,8 @@ logger = logging.getLogger(__name__)
 
 def _load_config(hermes_home: str = "") -> dict:
     """Load config from env vars, with $HERMES_HOME/memorylake.json overrides."""
-    from pathlib import Path
-
-    config = {
-        "host": os.environ.get("MEMORYLAKE_HOST", "https://app.memorylake.ai"),
-        "api_key": os.environ.get("MEMORYLAKE_API_KEY", ""),
-        "project_id": os.environ.get("MEMORYLAKE_PROJECT_ID", ""),
-        "user_id": os.environ.get("MEMORYLAKE_USER_ID", "hermes-user"),
-        "top_k": int(os.environ.get("MEMORYLAKE_TOP_K", "5")),
-        "search_threshold": float(os.environ.get("MEMORYLAKE_SEARCH_THRESHOLD", "0.3")),
-        "rerank": os.environ.get("MEMORYLAKE_RERANK", "true").lower() == "true",
-        "memory_mode": os.environ.get("MEMORYLAKE_MEMORY_MODE", "tool_driven"),
-        # Auto-upload
-        "auto_upload": os.environ.get("MEMORYLAKE_AUTO_UPLOAD", "true").lower() == "true",
-        # Web search defaults
-        "web_search_include_domains": os.environ.get("MEMORYLAKE_WEB_SEARCH_INCLUDE_DOMAINS", ""),
-        "web_search_exclude_domains": os.environ.get("MEMORYLAKE_WEB_SEARCH_EXCLUDE_DOMAINS", ""),
-        "web_search_country": os.environ.get("MEMORYLAKE_WEB_SEARCH_COUNTRY", ""),
-        "web_search_timezone": os.environ.get("MEMORYLAKE_WEB_SEARCH_TIMEZONE", ""),
-    }
-
-    if hermes_home:
-        config_path = Path(hermes_home) / "memorylake.json"
-    else:
-        from hermes_constants import get_hermes_home
-        config_path = get_hermes_home() / "memorylake.json"
-
-    if config_path.exists():
-        try:
-            file_cfg = json.loads(config_path.read_text(encoding="utf-8"))
-            config.update({k: v for k, v in file_cfg.items()
-                           if v is not None and v != ""})
-        except Exception:
-            pass
-
-    return config
+    from .get_config import get_config
+    return get_config()
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +309,7 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         self._client: Optional[MemoryLakeClient] = None
         self._config: Optional[dict] = None
         self._hermes_home = ""
-        self._user_id = "hermes-user"
+        self._user_id = "default"
         self._session_id = ""
         self._memory_mode = "tool_driven"
         self._top_k = 5
@@ -406,7 +373,7 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         project_id = self._config["project_id"]
         host = self._config.get("host", "https://app.memorylake.ai")
 
-        self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
+        self._user_id = kwargs.get("user_id") or self._config.get("user_id", "default")
         self._session_id = session_id
         self._top_k = int(self._config.get("top_k", 5))
         self._search_threshold = float(self._config.get("search_threshold", 0.3))
@@ -526,37 +493,17 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         return self._upload_mod
 
     def _upload_file(self, file_path: str) -> None:
-        """Upload a single file to MemoryLake, reusing the upload skill script."""
+        """Upload a file/archive/directory to MemoryLake via upload skill script."""
         mod = self._get_upload_mod()
-        host = self._client._host
-        api_key = self._client._api_key
-        project_id = self._client._project_id
         try:
             file_name = os.path.basename(file_path)
-            file_size = os.path.getsize(file_path)
-            logger.info("MemoryLake auto-upload: %s (%d bytes)", file_name, file_size)
-
-            if mod.is_archive(file_path):
-                import tempfile
-                tmp_dir = tempfile.mkdtemp(prefix="memorylake-extract-")
-                extracted = mod.extract_archive(file_path, tmp_dir)
-                logger.info("MemoryLake auto-upload: archive extracted %d files", len(extracted))
-                succeeded, failed = 0, 0
-                for fp in extracted:
-                    try:
-                        mod.upload_single_file(host, api_key, project_id, fp)
-                        succeeded += 1
-                        logger.info("MemoryLake auto-upload: %s done", os.path.basename(fp))
-                    except Exception as e:
-                        failed += 1
-                        logger.error("MemoryLake auto-upload: %s failed: %s%s",
-                                     os.path.basename(fp), e, self._fmt_request_url(e))
-                logger.info("MemoryLake auto-upload: archive %s — %d succeeded, %d failed, %d total",
-                            file_name, succeeded, failed, len(extracted))
-            else:
-                mod.upload_single_file(host, api_key, project_id, file_path, file_name)
-                logger.info("MemoryLake auto-upload: %s uploaded successfully", file_name)
-
+            logger.info("MemoryLake auto-upload: %s", file_name)
+            succeeded, failed = mod.upload_path(
+                self._client._host, self._client._api_key, self._client._project_id,
+                file_path, file_name,
+            )
+            logger.info("MemoryLake auto-upload: %s — %d succeeded, %d failed",
+                        file_name, succeeded, failed)
             self._uploaded_record[file_path] = os.path.getmtime(file_path)
             self._save_upload_record()
         except Exception as e:
