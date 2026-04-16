@@ -32,7 +32,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["memorylake_hermes"]
+include = ["memorylake_hermes", "memorylake_hermes.*"]
 
 [tool.setuptools.package-data]
-memorylake_hermes = ["plugin.yaml"]
+memorylake_hermes = ["plugin.yaml", "skills/**/*.md", "skills/**/*.py"]

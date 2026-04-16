@@ -63,9 +63,9 @@ fi
 echo "Extracting $(basename "$WHL")..."
 unzip -q -o "$WHL" -d "$TMPDIR/extracted"
 
-# Copy plugin files
+# Copy plugin files (recursive to include skills/ subdirectory)
 mkdir -p "$TARGET_DIR"
-cp "$TMPDIR/extracted/memorylake_hermes/"* "$TARGET_DIR/"
+cp -R "$TMPDIR/extracted/memorylake_hermes/"* "$TARGET_DIR/"
 
 echo "Installed memorylake plugin to $TARGET_DIR"
 
