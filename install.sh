@@ -10,10 +10,12 @@ set -euo pipefail
 #   ./install.sh                                                    # install, then prompt
 #   ./install.sh --api-key sk-... --project-id proj-...             # install with credentials
 #   ./install.sh --version 1.0.0                                    # install specific version
+#   ./install.sh --host https://custom.example                      # override MemoryLake host
 
 VERSION=""
 API_KEY=""
 PROJECT_ID=""
+HOST=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -21,6 +23,7 @@ while [[ $# -gt 0 ]]; do
         --version) VERSION="$2"; shift 2 ;;
         --api-key) API_KEY="$2"; shift 2 ;;
         --project-id) PROJECT_ID="$2"; shift 2 ;;
+        --host) HOST="$2"; shift 2 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac
 done
@@ -92,7 +95,12 @@ ENV_FILE="$(hermes config env-path)"
 touch "$ENV_FILE"
 
 # Update or append each variable
-for pair in "MEMORYLAKE_API_KEY=$API_KEY" "MEMORYLAKE_PROJECT_ID=$PROJECT_ID"; do
+pairs=("MEMORYLAKE_API_KEY=$API_KEY" "MEMORYLAKE_PROJECT_ID=$PROJECT_ID")
+if [[ -n "$HOST" ]]; then
+    pairs+=("MEMORYLAKE_HOST=$HOST")
+fi
+
+for pair in "${pairs[@]}"; do
     KEY="${pair%%=*}"
     if grep -q "^${KEY}=" "$ENV_FILE" 2>/dev/null; then
         sed -i.bak "s|^${KEY}=.*|${pair}|" "$ENV_FILE" && rm -f "$ENV_FILE.bak"
