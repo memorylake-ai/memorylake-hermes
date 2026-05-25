@@ -44,7 +44,24 @@ if [[ ! -d "$HERMES_DIR/plugins/memory" ]]; then
     exit 1
 fi
 
-# Download wheel from PyPI
+# Locate uv (same detection order as hermes setup-hermes.sh)
+UV_CMD=""
+if command -v uv &>/dev/null; then
+    UV_CMD="uv"
+elif [[ -x "$HOME/.local/bin/uv" ]]; then
+    UV_CMD="$HOME/.local/bin/uv"
+elif [[ -x "$HOME/.cargo/bin/uv" ]]; then
+    UV_CMD="$HOME/.cargo/bin/uv"
+elif [[ -x "$HERMES_DIR/venv/bin/uv" ]]; then
+    UV_CMD="$HERMES_DIR/venv/bin/uv"
+fi
+
+if [[ -z "$UV_CMD" ]]; then
+    echo "Error: 'uv' not found. Please install uv first: https://docs.astral.sh/uv/"
+    exit 1
+fi
+
+# Download package from PyPI into a temp directory
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
@@ -54,21 +71,16 @@ if [[ -n "$VERSION" ]]; then
 fi
 
 echo "Downloading $PKG from PyPI..."
-pip download --no-deps --dest "$TMPDIR" "$PKG" 2>&1 | tail -1
+$UV_CMD pip install --no-deps --target "$TMPDIR/site" "$PKG"
 
-# Find the downloaded wheel
-WHL=$(find "$TMPDIR" -name 'memorylake_hermes-*.whl' | head -1)
-if [[ -z "$WHL" ]]; then
-    echo "Error: Failed to download memorylake-hermes wheel."
+if [[ ! -d "$TMPDIR/site/memorylake_hermes" ]]; then
+    echo "Error: Failed to download memorylake-hermes package."
     exit 1
 fi
 
-echo "Extracting $(basename "$WHL")..."
-unzip -q -o "$WHL" -d "$TMPDIR/extracted"
-
 # Copy plugin files (recursive to include skills/ subdirectory)
 mkdir -p "$TARGET_DIR"
-cp -R "$TMPDIR/extracted/memorylake_hermes/"* "$TARGET_DIR/"
+cp -R "$TMPDIR/site/memorylake_hermes/"* "$TARGET_DIR/"
 
 echo "Installed memorylake plugin to $TARGET_DIR"
 
