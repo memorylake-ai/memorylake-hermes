@@ -78,11 +78,14 @@ def _format_document_result(doc: dict) -> str:
             parts.append(f"  {text[:500]}")
 
     # Table info
+    sheet_label = doc.get("semantic_sheet_name") or doc.get("sheet_name")
     for table in (highlight.get("inner_tables") or []):
         cols = [c.get("name", "") for c in (table.get("columns") or [])]
         rows = table.get("num_rows", 0)
         if cols:
-            parts.append(f"  Table: {', '.join(cols)} ({rows} rows)")
+            title = doc.get("title") or "Untitled Table"
+            sheet_part = f", sheet: {sheet_label}" if sheet_label else ""
+            parts.append(f"  Table: {title}{sheet_part} — {', '.join(cols)} ({rows} rows)")
 
     # Figure
     figure = highlight.get("figure")
