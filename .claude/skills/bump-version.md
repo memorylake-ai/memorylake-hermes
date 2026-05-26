@@ -30,21 +30,17 @@ If there are uncommitted changes, abort and tell the user to commit or stash fir
 
 ### Step 3: Update ALL version locations
 
-You MUST update the version string in **every** file listed below. Do not skip any.
+You MUST update the version string in **both** files listed below. Do not skip any.
 
 | # | File | Format |
 |---|------|--------|
 | 1 | `pyproject.toml` (line ~3) | `version = "X.Y.Z"` |
 | 2 | `src/memorylake_hermes/plugin.yaml` (line ~2) | `version: X.Y.Z` |
-| 3 | `src/memorylake_hermes/skills/memorylake/memorylake-upload/SKILL.md` (frontmatter line ~4) | `version: X.Y.Z` |
-| 4 | `src/memorylake_hermes/skills/memorylake/migrate-to-memorylake/SKILL.md` (frontmatter line ~4) | `version: X.Y.Z` |
-| 5 | `src/memorylake_hermes/skills/memorylake/memorylake-api/SKILL.md` (frontmatter line ~4) | `version: X.Y.Z` |
-| 6 | `src/memorylake_hermes/skills/memorylake/memorylake-config/SKILL.md` (frontmatter line ~4) | `version: X.Y.Z` |
 
-**After editing**, run a grep to verify no old version strings remain:
+**After editing**, run a grep to verify no old version strings remain in these two files:
 
 ```bash
-grep -rn 'OLD_VERSION' --include='*.toml' --include='*.yaml' --include='*.md' src/ pyproject.toml
+grep -n 'OLD_VERSION' pyproject.toml src/memorylake_hermes/plugin.yaml
 ```
 
 If the grep finds any remaining old version strings, fix them before proceeding.
@@ -52,11 +48,7 @@ If the grep finds any remaining old version strings, fix them before proceeding.
 ### Step 4: Commit
 
 ```bash
-git add pyproject.toml src/memorylake_hermes/plugin.yaml \
-  src/memorylake_hermes/skills/memorylake/memorylake-upload/SKILL.md \
-  src/memorylake_hermes/skills/memorylake/migrate-to-memorylake/SKILL.md \
-  src/memorylake_hermes/skills/memorylake/memorylake-api/SKILL.md \
-  src/memorylake_hermes/skills/memorylake/memorylake-config/SKILL.md
+git add pyproject.toml src/memorylake_hermes/plugin.yaml
 git commit -m "chore: bump version to X.Y.Z"
 ```
 
@@ -78,10 +70,10 @@ git push origin vX.Y.Z
 Print a summary:
 - Old version → New version
 - Tag name
-- Files updated (list all 6)
+- Files updated
 - Remote push status
 
 ## Important
 
-- If any new files with version strings are added to the project in the future, this skill's file list (Step 3) must be updated accordingly.
 - The `src/memorylake_hermes/client.py` reads version dynamically from `plugin.yaml` via `_read_plugin_version()`, so it does NOT need a manual update.
+- Version strings inside `src/memorylake_hermes/skills/**/SKILL.md` are intentionally NOT updated by this skill.
