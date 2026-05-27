@@ -433,20 +433,6 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         r"(?=[^a-zA-Z0-9]|$)",
     )
 
-    # Broader pattern: match any absolute file path with a common document
-    # extension. Used as fallback when the cache pattern misses (e.g. WeChat
-    # channel sends files without the standard hermes cache structure).
-    _DOCUMENT_EXTENSIONS = {
-        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-        ".csv", ".txt", ".md", ".json", ".xml", ".yaml", ".yml",
-        ".zip", ".tar", ".gz", ".7z", ".rar",
-        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg",
-    }
-    _ANY_FILE_PATH_RE = re.compile(
-        r"(?<![:/\w])(?:[A-Za-z]:[/\\]|/)(?:[^\s:*?\"<>|])+\.[a-zA-Z0-9]{1,6}"
-        r"(?=[^a-zA-Z0-9]|$)",
-    )
-
     def _upload_record_path(self) -> Path:
         p = Path(self._hermes_home) / ".memorylake"
         p.mkdir(parents=True, exist_ok=True)
@@ -469,19 +455,9 @@ class MemoryLakeMemoryProvider(MemoryProvider):
             logger.error("MemoryLake: failed to save upload record: %s", e)
 
     def _extract_document_paths(self, text: str) -> List[str]:
-        """Extract file paths from prompt text.
-
-        First tries the strict hermes cache pattern; falls back to matching
-        any absolute path with a known document extension.
-        """
+        """Extract cached file paths from prompt text by path pattern."""
         matches = self._CACHED_FILE_RE.findall(text)
-        if not matches:
-            candidates = self._ANY_FILE_PATH_RE.findall(text)
-            matches = [
-                p for p in candidates
-                if os.path.splitext(p)[1].lower() in self._DOCUMENT_EXTENSIONS
-            ]
-        paths = list(dict.fromkeys(matches))
+        paths = list(dict.fromkeys(matches))  # deduplicate, preserve order
         return [p for p in paths if os.path.isfile(p)]
 
     def _needs_upload(self, file_path: str) -> bool:
@@ -716,13 +692,10 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         results. Uses the CURRENT user message — no staleness.
         Skipped in tool_driven mode — the model calls memorylake_search itself.
         """
-        # Auto-upload: detect documents in user message (fire-and-forget).
-        # Run even when query is empty — file-only messages (e.g. WeChat)
-        # still carry paths in the context note injected by the gateway.
-        if self._auto_upload and self._client:
+        # Auto-upload: detect documents in user message (fire-and-forget)
+        if self._auto_upload and self._client and query:
             try:
-                if query:
-                    self._auto_upload_documents(query)
+                self._auto_upload_documents(query)
             except Exception as e:
                 logger.error("MemoryLake auto-upload detection failed: %s", e)
 
@@ -801,19 +774,9 @@ class MemoryLakeMemoryProvider(MemoryProvider):
     def sync_turn(
         self, user_content: str, assistant_content: str, *, session_id: str = ""
     ) -> None:
-        """Auto-capture: send the turn to MemoryLake for server-side extraction.
-
-        Also triggers auto-upload for any document paths found in user_content
-        as a second chance — prefetch() may have missed them if the query was
-        empty (file-only messages from WeChat or similar channels).
-        """
+        """Auto-capture: send the turn to MemoryLake for server-side extraction."""
         if not self._client or not user_content:
             return
-        if self._auto_upload and user_content:
-            try:
-                self._auto_upload_documents(user_content)
-            except Exception as e:
-                logger.error("MemoryLake sync_turn auto-upload failed: %s", e)
 
         def _sync():
             try:
