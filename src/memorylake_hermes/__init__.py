@@ -19,7 +19,7 @@ Config via environment variables (profile-scoped via each profile's .env):
   MEMORYLAKE_TOP_K          — Max recall results (default: 5)
   MEMORYLAKE_SEARCH_THRESHOLD — Min similarity 0-1 (default: 0.3)
   MEMORYLAKE_RERANK         — Rerank results (default: true)
-  MEMORYLAKE_MEMORY_MODE    — tool_driven (default) or prefetch
+  MEMORYLAKE_MEMORY_MODE    — prefetch (default) or tool_driven
 
 Or via $HERMES_HOME/memorylake.json.
 """
@@ -301,9 +301,9 @@ ALL_TOOL_SCHEMAS = [
 class MemoryLakeMemoryProvider(MemoryProvider):
     """MemoryLake long-term memory with unified search, auto-capture, and open data."""
 
-    # memory_mode: "prefetch" or "tool_driven"
+    # memory_mode: "prefetch" (default) or "tool_driven"
     #   prefetch     — framework calls prefetch() to inject unified search results
-    #                  into context before the LLM call (default)
+    #                  into context before the LLM call
     #   tool_driven  — no prefetch; system prompt forces the model to call
     #                  memorylake_search as its first action every turn
     VALID_MEMORY_MODES = ("prefetch", "tool_driven")
@@ -314,7 +314,7 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         self._hermes_home = ""
         self._user_id = "default"
         self._session_id = ""
-        self._memory_mode = "tool_driven"
+        self._memory_mode = "prefetch"
         self._top_k = 5
         self._search_threshold = 0.3
         self._rerank = True
@@ -383,8 +383,8 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         self._rerank = self._config.get("rerank", True)
         if isinstance(self._rerank, str):
             self._rerank = self._rerank.lower() == "true"
-        mode = str(self._config.get("memory_mode", "tool_driven")).lower()
-        self._memory_mode = mode if mode in self.VALID_MEMORY_MODES else "tool_driven"
+        mode = str(self._config.get("memory_mode", "prefetch")).lower()
+        self._memory_mode = mode if mode in self.VALID_MEMORY_MODES else "prefetch"
 
         # Auto-upload config
         self._auto_upload = self._config.get("auto_upload", True)
@@ -433,6 +433,20 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         r"(?=[^a-zA-Z0-9]|$)",
     )
 
+    # Broader pattern: match any absolute file path with a common document
+    # extension. Used as fallback when the cache pattern misses (e.g. WeChat
+    # channel sends files without the standard hermes cache structure).
+    _DOCUMENT_EXTENSIONS = {
+        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+        ".csv", ".txt", ".md", ".json", ".xml", ".yaml", ".yml",
+        ".zip", ".tar", ".gz", ".7z", ".rar",
+        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg",
+    }
+    _ANY_FILE_PATH_RE = re.compile(
+        r"(?<![:/\w])(?:[A-Za-z]:[/\\]|/)(?:[^\s:*?\"<>|])+\.[a-zA-Z0-9]{1,6}"
+        r"(?=[^a-zA-Z0-9]|$)",
+    )
+
     def _upload_record_path(self) -> Path:
         p = Path(self._hermes_home) / ".memorylake"
         p.mkdir(parents=True, exist_ok=True)
@@ -455,9 +469,19 @@ class MemoryLakeMemoryProvider(MemoryProvider):
             logger.error("MemoryLake: failed to save upload record: %s", e)
 
     def _extract_document_paths(self, text: str) -> List[str]:
-        """Extract cached file paths from prompt text by path pattern."""
+        """Extract file paths from prompt text.
+
+        First tries the strict hermes cache pattern; falls back to matching
+        any absolute path with a known document extension.
+        """
         matches = self._CACHED_FILE_RE.findall(text)
-        paths = list(dict.fromkeys(matches))  # deduplicate, preserve order
+        if not matches:
+            candidates = self._ANY_FILE_PATH_RE.findall(text)
+            matches = [
+                p for p in candidates
+                if os.path.splitext(p)[1].lower() in self._DOCUMENT_EXTENSIONS
+            ]
+        paths = list(dict.fromkeys(matches))
         return [p for p in paths if os.path.isfile(p)]
 
     def _needs_upload(self, file_path: str) -> bool:
@@ -692,10 +716,13 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         results. Uses the CURRENT user message — no staleness.
         Skipped in tool_driven mode — the model calls memorylake_search itself.
         """
-        # Auto-upload: detect documents in user message (fire-and-forget)
-        if self._auto_upload and self._client and query:
+        # Auto-upload: detect documents in user message (fire-and-forget).
+        # Run even when query is empty — file-only messages (e.g. WeChat)
+        # still carry paths in the context note injected by the gateway.
+        if self._auto_upload and self._client:
             try:
-                self._auto_upload_documents(query)
+                if query:
+                    self._auto_upload_documents(query)
             except Exception as e:
                 logger.error("MemoryLake auto-upload detection failed: %s", e)
 
@@ -774,9 +801,19 @@ class MemoryLakeMemoryProvider(MemoryProvider):
     def sync_turn(
         self, user_content: str, assistant_content: str, *, session_id: str = ""
     ) -> None:
-        """Auto-capture: send the turn to MemoryLake for server-side extraction."""
+        """Auto-capture: send the turn to MemoryLake for server-side extraction.
+
+        Also triggers auto-upload for any document paths found in user_content
+        as a second chance — prefetch() may have missed them if the query was
+        empty (file-only messages from WeChat or similar channels).
+        """
         if not self._client or not user_content:
             return
+        if self._auto_upload and user_content:
+            try:
+                self._auto_upload_documents(user_content)
+            except Exception as e:
+                logger.error("MemoryLake sync_turn auto-upload failed: %s", e)
 
         def _sync():
             try:
