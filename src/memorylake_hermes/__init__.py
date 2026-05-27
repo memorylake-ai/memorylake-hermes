@@ -15,7 +15,6 @@ Config via environment variables (profile-scoped via each profile's .env):
   MEMORYLAKE_API_KEY        — API key (required)
   MEMORYLAKE_PROJECT_ID     — Project ID (required)
   MEMORYLAKE_HOST           — Server URL (default: https://app.memorylake.ai)
-  MEMORYLAKE_USER_ID        — User identifier (default: default)
   MEMORYLAKE_TOP_K          — Max recall results (default: 5)
   MEMORYLAKE_SEARCH_THRESHOLD — Min similarity 0-1 (default: 0.3)
   MEMORYLAKE_RERANK         — Rerank results (default: true)
@@ -376,7 +375,7 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         project_id = self._config["project_id"]
         host = self._config.get("host", "https://app.memorylake.ai")
 
-        self._user_id = kwargs.get("user_id") or self._config.get("user_id", "default")
+        self._user_id = "default"  # not user-configurable
         self._session_id = session_id
         self._top_k = int(self._config.get("top_k", 5))
         self._search_threshold = float(self._config.get("search_threshold", 0.3))

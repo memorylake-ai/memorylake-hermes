@@ -58,7 +58,6 @@ memory:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MEMORYLAKE_HOST` | `https://app.memorylake.ai` | MemoryLake server URL |
-| `MEMORYLAKE_USER_ID` | `default` | User identifier (auto-set to platform user ID in gateway mode) |
 | `MEMORYLAKE_TOP_K` | `5` | Max recall results |
 | `MEMORYLAKE_SEARCH_THRESHOLD` | `0.3` | Min similarity score (0-1) |
 | `MEMORYLAKE_RERANK` | `true` | Rerank search results |
