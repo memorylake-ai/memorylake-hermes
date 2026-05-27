@@ -781,11 +781,11 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         def _sync():
             try:
                 messages = [
-                    {"role": "user", "content": user_content[:4000]},
-                    {"role": "assistant", "content": assistant_content[:4000]},
+                    {"role": "user", "content": user_content},
+                    {"role": "assistant", "content": assistant_content},
                 ]
                 logger.info("MemoryLake sync_turn: sending %d chars user + %d chars assistant",
-                            len(user_content[:4000]), len(assistant_content[:4000]))
+                            len(user_content), len(assistant_content))
                 result = self._client.add_memories(
                     messages,
                     self._user_id,
