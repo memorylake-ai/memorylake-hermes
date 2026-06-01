@@ -39,6 +39,7 @@ from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
 from .client import MemoryLakeClient
+from .telemetry import capture_event
 
 logger = logging.getLogger(__name__)
 
@@ -401,8 +402,13 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         self._ws_timezone = self._config.get("web_search_timezone") or None
 
         self._client = MemoryLakeClient(host, api_key, project_id)
+        self._api_key = api_key
         logger.info("MemoryLake initialized: host=%s project=%s user=%s mode=%s",
                      host, project_id, self._user_id, self._memory_mode)
+        capture_event("memorylake.plugin.initialized", {
+            "memory_mode": self._memory_mode,
+            "auto_upload": self._auto_upload,
+        }, api_key=api_key)
 
         # Register plugin skills and env_passthrough into config
         self._register_skills()
@@ -498,7 +504,9 @@ class MemoryLakeMemoryProvider(MemoryProvider):
 
     def _upload_file(self, file_path: str) -> None:
         """Upload a file/archive/directory to MemoryLake via upload skill script."""
+        import time as _time
         mod = self._get_upload_mod()
+        _ul_start = _time.monotonic()
         try:
             file_name = os.path.basename(file_path)
             logger.info("MemoryLake auto-upload: %s", file_name)
@@ -510,7 +518,16 @@ class MemoryLakeMemoryProvider(MemoryProvider):
                         file_name, succeeded, failed)
             self._uploaded_record[file_path] = os.path.getmtime(file_path)
             self._save_upload_record()
+            capture_event("memorylake.hook.upload", {
+                "success": True,
+                "latency_ms": round((_time.monotonic() - _ul_start) * 1000),
+            }, api_key=self._api_key)
         except Exception as e:
+            capture_event("memorylake.hook.upload", {
+                "success": False,
+                "latency_ms": round((_time.monotonic() - _ul_start) * 1000),
+                "error": str(e),
+            }, api_key=self._api_key)
             logger.error("MemoryLake auto-upload failed for %s: %s%s", file_path, e, self._fmt_request_url(e))
 
     def _auto_upload_documents(self, user_message: str) -> None:
@@ -709,8 +726,12 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         if not self._client or not query or not query.strip():
             return ""
 
+        import time as _time
+        _pf_start = _time.monotonic()
         memory_results = []
         doc_results = []
+        _mem_failed = False
+        _doc_failed = False
 
         def _search_memories():
             return self._client.search_memories(
@@ -734,6 +755,7 @@ class MemoryLakeMemoryProvider(MemoryProvider):
                 memory_results = mem_future.result(timeout=10.0)
                 logger.info("MemoryLake prefetch: %d memories found", len(memory_results))
             except Exception as e:
+                _mem_failed = True
                 logger.error("MemoryLake memory prefetch failed: %s%s", e, self._fmt_request_url(e))
 
             try:
@@ -741,7 +763,15 @@ class MemoryLakeMemoryProvider(MemoryProvider):
                 doc_results = doc_data.get("results", [])
                 logger.info("MemoryLake prefetch: %d documents found", len(doc_results))
             except Exception as e:
+                _doc_failed = True
                 logger.error("MemoryLake document prefetch failed: %s%s", e, self._fmt_request_url(e))
+
+        capture_event("memorylake.hook.recall", {
+            "success": not (_mem_failed and _doc_failed),
+            "latency_ms": round((_time.monotonic() - _pf_start) * 1000),
+            "memory_count": len(memory_results),
+            "document_count": len(doc_results),
+        }, api_key=self._api_key)
 
         if not memory_results and not doc_results:
             return ""
@@ -779,6 +809,8 @@ class MemoryLakeMemoryProvider(MemoryProvider):
             return
 
         def _sync():
+            import time as _time
+            _cap_start = _time.monotonic()
             try:
                 messages = [
                     {"role": "user", "content": user_content[:4000]},
@@ -791,8 +823,19 @@ class MemoryLakeMemoryProvider(MemoryProvider):
                     self._user_id,
                     session_id=session_id or self._session_id,
                 )
+                captured_count = len(result.get("results", []))
+                capture_event("memorylake.hook.capture", {
+                    "success": True,
+                    "latency_ms": round((_time.monotonic() - _cap_start) * 1000),
+                    "captured_count": captured_count,
+                }, api_key=self._api_key)
                 logger.info("MemoryLake sync_turn result: %s", result)
             except Exception as e:
+                capture_event("memorylake.hook.capture", {
+                    "success": False,
+                    "latency_ms": round((_time.monotonic() - _cap_start) * 1000),
+                    "error": str(e),
+                }, api_key=self._api_key)
                 logger.error("MemoryLake sync_turn failed: %s%s", e, self._fmt_request_url(e), exc_info=True)
 
         if self._sync_thread and self._sync_thread.is_alive():
@@ -809,6 +852,8 @@ class MemoryLakeMemoryProvider(MemoryProvider):
             return
 
         def _write():
+            import time as _time
+            _mw_start = _time.monotonic()
             try:
                 logger.info("MemoryLake on_memory_write: action=%s target=%s content=%r",
                             action, target, content[:200])
@@ -817,8 +862,17 @@ class MemoryLakeMemoryProvider(MemoryProvider):
                     self._user_id,
                     session_id=self._session_id,
                 )
+                capture_event("memorylake.hook.memory_write", {
+                    "success": True,
+                    "latency_ms": round((_time.monotonic() - _mw_start) * 1000),
+                }, api_key=self._api_key)
                 logger.info("MemoryLake on_memory_write result: %s", result)
             except Exception as e:
+                capture_event("memorylake.hook.memory_write", {
+                    "success": False,
+                    "latency_ms": round((_time.monotonic() - _mw_start) * 1000),
+                    "error": str(e),
+                }, api_key=self._api_key)
                 logger.error("MemoryLake memory mirror failed: %s%s", e, self._fmt_request_url(e), exc_info=True)
 
         threading.Thread(
@@ -832,7 +886,9 @@ class MemoryLakeMemoryProvider(MemoryProvider):
         if not self._client:
             return tool_error("MemoryLake not initialized")
 
+        import time as _time
         logger.info("MemoryLake handle_tool_call: %s args=%s", tool_name, args)
+        _tool_start = _time.monotonic()
         try:
             if tool_name == "memorylake_search":
                 result = self._tool_search(args)
@@ -851,8 +907,25 @@ class MemoryLakeMemoryProvider(MemoryProvider):
             else:
                 return tool_error(f"Unknown tool: {tool_name}")
             logger.info("MemoryLake %s result: %s", tool_name, result[:500] if isinstance(result, str) else result)
+            _props: Dict[str, Any] = {
+                "success": True,
+                "latency_ms": round((_time.monotonic() - _tool_start) * 1000),
+            }
+            try:
+                _parsed = json.loads(result) if isinstance(result, str) else {}
+                for k in ("memory_count", "document_count", "count", "total_results"):
+                    if k in _parsed:
+                        _props[k] = _parsed[k]
+            except (json.JSONDecodeError, TypeError):
+                pass
+            capture_event(f"memorylake.tool.{tool_name}", _props, api_key=self._api_key)
             return result
         except Exception as e:
+            capture_event(f"memorylake.tool.{tool_name}", {
+                "success": False,
+                "latency_ms": round((_time.monotonic() - _tool_start) * 1000),
+                "error": str(e),
+            }, api_key=self._api_key)
             logger.error("MemoryLake tool %s failed: %s", tool_name, e, exc_info=True)
             return tool_error(f"{tool_name} failed: {e}")
 
