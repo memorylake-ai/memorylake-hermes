@@ -770,6 +770,8 @@ class MemoryLakeMemoryProvider(MemoryProvider):
             "latency_ms": round((time.monotonic() - _pf_start) * 1000),
             "memory_count": len(memory_results),
             "document_count": len(doc_results),
+            "memory_failed": _mem_failed,
+            "document_failed": _doc_failed,
         }, api_key=self._api_key)
 
         if not memory_results and not doc_results:
