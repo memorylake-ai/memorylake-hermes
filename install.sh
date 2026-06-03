@@ -37,6 +37,11 @@ fi
 HERMES_HOME="$(dirname "$(hermes config path)")"
 HERMES_DIR="$HERMES_HOME/hermes-agent"
 
+# Root on Linux uses FHS layout: hermes-agent lives at /usr/local/lib/hermes-agent
+if [[ ! -d "$HERMES_DIR" && "$(id -u)" -eq 0 && -d "/usr/local/lib/hermes-agent" ]]; then
+    HERMES_DIR="/usr/local/lib/hermes-agent"
+fi
+
 TARGET_DIR="$HERMES_DIR/plugins/memory/memorylake"
 
 if [[ ! -d "$HERMES_DIR/plugins/memory" ]]; then
