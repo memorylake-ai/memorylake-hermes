@@ -49,16 +49,16 @@ if [[ ! -d "$HERMES_DIR/plugins/memory" ]]; then
     exit 1
 fi
 
-# Locate uv (same detection order as hermes setup-hermes.sh)
+# Locate uv (same detection order as hermes scripts/install.sh)
 UV_CMD=""
-if command -v uv &>/dev/null; then
+if [[ -x "$HERMES_HOME/bin/uv" ]]; then
+    UV_CMD="$HERMES_HOME/bin/uv"
+elif command -v uv &>/dev/null; then
     UV_CMD="uv"
 elif [[ -x "$HOME/.local/bin/uv" ]]; then
     UV_CMD="$HOME/.local/bin/uv"
 elif [[ -x "$HOME/.cargo/bin/uv" ]]; then
     UV_CMD="$HOME/.cargo/bin/uv"
-elif [[ -x "$HERMES_DIR/venv/bin/uv" ]]; then
-    UV_CMD="$HERMES_DIR/venv/bin/uv"
 fi
 
 if [[ -z "$UV_CMD" ]]; then
