@@ -127,7 +127,7 @@ def capture_event(
                 "python_version": platform.python_version(),
                 "os": sys.platform,
                 "$process_person_profile": False,
-                "$lib": "posthog-node",
+                "$lib": "posthog-python",
                 **(properties or {}),
             },
         }
