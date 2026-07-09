@@ -31,7 +31,6 @@ def get_config() -> dict:
         "host": os.environ.get("MEMORYLAKE_HOST", "https://app.memorylake.ai"),
         "api_key": os.environ.get("MEMORYLAKE_API_KEY", ""),
         "project_id": os.environ.get("MEMORYLAKE_PROJECT_ID", ""),
-        "user_id": os.environ.get("MEMORYLAKE_USER_ID", "default"),
         "top_k": int(os.environ.get("MEMORYLAKE_TOP_K", "5")),
         "search_threshold": float(os.environ.get("MEMORYLAKE_SEARCH_THRESHOLD", "0.3")),
         "rerank": os.environ.get("MEMORYLAKE_RERANK", "true").lower() == "true",
@@ -56,6 +55,7 @@ def get_config() -> dict:
             print(f"WARNING: Failed to read {config_path}: {e}", file=sys.stderr)
 
     config["host"] = config["host"].rstrip("/")
+    config["user_id"] = "default"  # not user-configurable
     config["hermes_home"] = hermes_home
     return config
 
